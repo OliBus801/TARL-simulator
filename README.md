@@ -30,3 +30,28 @@ TARL-simulator aims to:
 ## License
 
 This project is licensed under the [GNU General Public License v3.0](LICENSE).
+
+## Unified runner
+
+Experiments are launched through ``main.py`` which selects the
+algorithm and mode of execution.
+
+**Examples**
+
+Run classical Dijkstra evaluation:
+
+```bash
+python main.py --algo dijkstra --mode eval --steps 10
+```
+
+Evaluate a trained MPNN policy:
+
+```bash
+python main.py --algo mpnn --mode eval --steps 10
+```
+
+Train an MPNN using PPO:
+
+```bash
+python main.py --algo mpnn+ppo --mode train --epochs 5 --rollout-steps 256
+```
