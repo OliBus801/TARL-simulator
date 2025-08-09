@@ -1,46 +1,48 @@
 import pytest
+import torch
+from torch_geometric.data import Data
+
 from src.agents.base import Agents
 from src.direction_mpnn import DirectionMPNN
 from src.response_mpnn import ResponseMPNN
 from src.simulation_core_model import SimulationCoreModel
 from src.transportation_simulator import TransportationSimulator
-    
-import torch
-from torch_geometric.data import Data
+from src.feature_helpers import FeatureHelpers
 
 
-@pytest.fixture(scope='class')
-def agents():
-    """Fixture for creating a DiscreteChoiceModel instance."""
-    model = Agents()
-    return model
+@pytest.fixture
+def device():
+    return 'cpu'
+
+
+@pytest.fixture
+def agents(device):
+    agent = Agents(device)
+    # create two simple agents ready to depart from road 0 and arrive at road 0
+    agent.agent_features = torch.tensor([
+        [0.0, 0.0, 0.0, 0.0, 30.0, 0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 25.0, 1.0, 0.0, 0.0, 0.0],
+    ])
+    agent.time = 0
+    return agent
+
 
 @pytest.fixture
 def direction_mpnn():
-    """Fixture for creating a DirectionMPNN instance."""
-    model = DirectionMPNN()
-    return model
+    return DirectionMPNN()
+
 
 @pytest.fixture
 def response_mpnn():
-    """Fixture for creating a ResponseMPNN instance."""
-    model = ResponseMPNN()
-    return model
+    return ResponseMPNN()
+
 
 @pytest.fixture
-def core():
-    return SimulationCoreModel(100)
+def core(device):
+    return SimulationCoreModel(Nmax=100, device=device, time=0)
+
 
 @pytest.fixture
-def sioux_falls(simulator: TransportationSimulator, agents: Agents):
-    simulator.config_network("data/Siouxfalls_network_PT.xml")
-    agents.load("save/sioux_falls_agent_data.pt")
-    simulator.agent = agents
-    simulator.configure_core()
-    return simulator
-
-
-@pytest.fixture(scope="class")
 def braess_graph():
     Nmax = 100
     feature_dim = 3 * Nmax + 7
@@ -61,36 +63,50 @@ def braess_graph():
         f[3*Nmax + 6] = id_road
         return f
 
-    # Nœuds : A=0, B=1, C=2, D=3
     x = torch.stack([
-        build_node_feature(torch.zeros(100), torch.zeros(100), torch.zeros(100), 2, 1, 3.0, 100.0, 10.0, 1, 0),  # A
-        build_node_feature(torch.zeros(100), torch.zeros(100), torch.zeros(100), 2, 1, 1.0, 100.0, 10.0, 2, 1),  # B
-        build_node_feature(torch.zeros(100), torch.zeros(100), torch.zeros(100), 2, 2, 1.0, 100.0, 10.0, 0, 2),  # C
+        build_node_feature(torch.zeros(Nmax), torch.zeros(Nmax), torch.zeros(Nmax), 2, 1, 3.0, 100.0, 10.0, 1, 0),
+        build_node_feature(torch.zeros(Nmax), torch.zeros(Nmax), torch.zeros(Nmax), 2, 1, 1.0, 100.0, 10.0, 2, 1),
+        build_node_feature(torch.zeros(Nmax), torch.zeros(Nmax), torch.zeros(Nmax), 2, 2, 1.0, 100.0, 10.0, 0, 2),
     ])
 
-    # Put some agents on the road
-    x[0, 0] = torch.tensor([1.0])
-    x[1, 0] = torch.tensor([2.0])
-    x[2, 0] = torch.tensor([3.0])
-    x[2, 1] = torch.tensor([4.0])
+    x[0, 0] = 1.0
+    x[1, 0] = 2.0
+    x[2, 0] = 3.0
+    x[2, 1] = 4.0
+    x[2, 2 * Nmax + 1] = 1.0
 
-    # Put the traffic 
-    x[2, 2 * Nmax + 1] = torch.tensor([1.0])
-
-
-    # Arêtes directionnelles du réseau de Braess
     edge_index = torch.tensor([
-        [0, 1, 2],  # source
-        [1, 2, 0],  # target
+        [0, 1, 2],
+        [1, 2, 0],
     ], dtype=torch.long)
-
     edge_attr = torch.rand(edge_index.size(1), 1)
 
-    data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
 
-    return data
 
 @pytest.fixture
-def simulator():
-    simulator = TransportationSimulator()
-    return simulator
+def simple_network_file(tmp_path):
+    content = (
+        '<network>'
+        '  <links effectivecellsize="7.5">'
+        '    <link id="0" from="A" to="B" length="100" capacity="10" freespeed="10" permlanes="1"/>'
+        '    <link id="1" from="B" to="A" length="100" capacity="10" freespeed="10" permlanes="1"/>'
+        '  </links>'
+        '</network>'
+    )
+    file = tmp_path / "network.xml"
+    file.write_text(content)
+    return str(file)
+
+
+@pytest.fixture
+def simulator(device, simple_network_file):
+    sim = TransportationSimulator(device)
+    sim.config_network(simple_network_file)
+    sim.agent.agent_features = torch.zeros((1, 9))
+    sim.agent.agent_features[0, 0] = 0  # origin
+    sim.agent.agent_features[0, 1] = 0  # destination
+    sim.agent.agent_features[0, 2] = 0  # departure time
+    sim.config_parameters(start_time=1)
+    sim.agent.set_time(sim.time)
+    return sim
