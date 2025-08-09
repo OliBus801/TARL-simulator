@@ -52,6 +52,7 @@ class Runner:
                 device=str(self.device),
                 timestep_size=self.args.timestep_size,
                 start_time=self.args.start_end_time[0],
+                end_time=self.args.start_end_time[1],
                 scenario=self.args.scenario,
             )
 
@@ -108,6 +109,7 @@ class Runner:
             device=str(self.device),
             timestep_size=self.args.timestep_size,
             start_time=self.args.start_end_time[0],
+            end_time=self.args.start_end_time[1],
             scenario=self.args.scenario,
         )
         eval_env.simulator.agent = self.policy_net
