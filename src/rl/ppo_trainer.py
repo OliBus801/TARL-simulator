@@ -3,9 +3,6 @@ import torch
 from torchrl.collectors import SyncDataCollector
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
-from torchrl.data.replay_buffers import ReplayBuffer
-from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
-from torchrl.data.replay_buffers.storages import LazyTensorStorage
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from torch.utils.tensorboard import SummaryWriter
 
@@ -14,9 +11,9 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
               log_dir=None, eval_env=None, eval_interval=0, log_interval=1, stochastic_eval=False):
     """A lightweight PPO training loop used for smoke tests.
 
-    The implementation is intentionally compact and only performs a
-    single optimisation round.  It is sufficient for unit tests and
-    toy examples but not meant for large scale experiments.
+    The implementation is intentionally compact but supports multiple
+    optimisation epochs over each collected batch.  It is sufficient for
+    unit tests and toy examples but not meant for large scale experiments.
     """
     collector = SyncDataCollector(
         env,
@@ -32,11 +29,19 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
     writer = SummaryWriter(log_dir) if log_dir is not None else None
     global_step = 0
 
-    advantage_module = GAE(gamma=0.99, lmbda=0.95, value_network=value_module, average_gae=True, device=device)
-    loss_module = ClipPPOLoss(actor_network=policy_module, critic_network=value_module, clip_epsilon=0.2)
+    advantage_module = GAE(
+        gamma=0.99,
+        lmbda=0.95,
+        value_network=value_module,
+        average_gae=True,
+        device=device,
+    )
+    loss_module = ClipPPOLoss(
+        actor_network=policy_module,
+        critic_network=value_module,
+        clip_epsilon=0.2,
+    )
     optim = torch.optim.Adam(loss_module.parameters(), lr=1e-3)
-    replay_buffer = ReplayBuffer(storage=LazyTensorStorage(max_size=frames_per_batch),
-                                 sampler=SamplerWithoutReplacement())
 
     def _log_training(it, batch_td, loss_vals, loss, grad_norm):
         if writer is None or it % log_interval:
@@ -128,23 +133,51 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
 
     for i, tensordict_data in enumerate(collector):
         global_step += frames_per_batch
-        for _ in range(num_epochs):
-            advantage_module(tensordict_data)
-            replay_buffer.extend(tensordict_data.reshape(-1).to("cpu"))
-            batch = replay_buffer.sample(min(sub_batch_size, replay_buffer._storage._storage.shape[0])).to(device)
-            loss_vals = loss_module(batch)
-            loss = (loss_vals["loss_objective"] +
-                    loss_vals["loss_critic"] +
-                    loss_vals.get("loss_entropy", 0))
-            loss.backward()
-            grad_norm = 0.0
-            grads = [p.grad for p in loss_module.parameters() if p.grad is not None]
-            if grads:
-                grad_norm = torch.norm(torch.stack([g.norm() for g in grads])).item()
-            optim.step()
-            optim.zero_grad()
 
-        _log_training(i, tensordict_data, loss_vals, loss, grad_norm)
+        # Compute advantages once for the whole batch
+        advantage_module(tensordict_data)
+        data = tensordict_data.reshape(-1).to(device)
+
+        loss_vals_acc = {}
+        loss_acc = 0.0
+        grad_norm_acc = 0.0
+        n_updates = 0
+
+        for _ in range(num_epochs):
+            perm = torch.randperm(data.shape[0])
+            for idx in perm.split(sub_batch_size):
+                batch = data[idx]
+                loss_vals = loss_module(batch)
+                loss = (
+                    loss_vals["loss_objective"]
+                    + loss_vals["loss_critic"]
+                    + loss_vals.get("loss_entropy", 0)
+                )
+                loss.backward()
+
+                grads = [p.grad for p in loss_module.parameters() if p.grad is not None]
+                grad_norm = 0.0
+                if grads:
+                    grad_norm = torch.norm(torch.stack([g.norm() for g in grads])).item()
+                optim.step()
+                optim.zero_grad()
+
+                n_updates += 1
+                for k, v in loss_vals.items():
+                    loss_vals_acc[k] = loss_vals_acc.get(k, 0.0) + v.detach()
+                loss_acc += loss.detach()
+                grad_norm_acc += grad_norm
+
+        if n_updates:
+            avg_loss_vals = {k: v / n_updates for k, v in loss_vals_acc.items()}
+            avg_loss = loss_acc / n_updates
+            avg_grad_norm = grad_norm_acc / n_updates
+        else:
+            avg_loss_vals = loss_vals_acc
+            avg_loss = torch.tensor(0.0)
+            avg_grad_norm = 0.0
+
+        _log_training(i, tensordict_data, avg_loss_vals, avg_loss, avg_grad_norm)
         if eval_interval and i % eval_interval == 0:
             _evaluate("eval", ExplorationType.MODE)
             if stochastic_eval:
