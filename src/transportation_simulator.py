@@ -5,6 +5,8 @@ from torch_geometric.data import Data
 from src.feature_helpers import FeatureHelpers
 from src.simulation_core_model import SimulationCoreModel
 from src.agents.base import Agents
+import matplotlib
+matplotlib.use("Agg")  # Use a non-interactive backend for saving plots
 import matplotlib.pyplot as plt
 import time
 import tqdm

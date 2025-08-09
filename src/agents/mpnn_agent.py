@@ -66,7 +66,7 @@ class MPNNPolicyNet(MessagePassing, Agents):
         assert edge_index.size(0) == 2, "Edge index must be a 2D tensor with shape [2, num_edges]."
 
         # Create a nx graph from the edge index
-        nx_graph = Data(edge_index=edge_index)
+        nx_graph = Data(edge_index=edge_index, num_nodes=self.num_nodes)
         nx_graph.edge_attr = free_flow_travel
         nx_graph = to_networkx(nx_graph, edge_attrs=["edge_attr"], to_undirected=False)
 

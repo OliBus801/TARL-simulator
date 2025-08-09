@@ -161,8 +161,8 @@ class SimulatorEnv(EnvBase):
         self.terminated_spec = BoundedTensorSpec(
             shape=(1,),
             dtype=torch.bool,
-            minimum=0,
-            maximum=1,
+            low=torch.tensor(0, dtype=torch.bool, device=device),
+            high=torch.tensor(1, dtype=torch.bool, device=device),
             device=device
         )
 

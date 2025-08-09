@@ -179,7 +179,7 @@ class Runner:
             )
 
             with torch.no_grad():
-                self.env.rollout(n_timesteps, policy_module, break_when_any_done=True)
+                self.env.rollout(n_timesteps, policy_module, break_when_any_done=False)
 
             # Evaluate metrics similar to classical algorithms
             mask = self.env.simulator.agent.agent_features[:, self.env.simulator.agent.DONE] == 1
