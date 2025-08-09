@@ -104,6 +104,13 @@ class Runner:
         output_dir.mkdir(parents=True, exist_ok=True)
         checkpoint = output_dir / "policy.pt"
 
+        eval_env = SimulatorEnv(
+            device=str(self.device),
+            timestep_size=self.args.timestep_size,
+            start_time=self.args.start_end_time[0],
+            scenario=self.args.scenario,
+        )
+
         ppo_train(
             self.env,
             policy_module,
@@ -113,6 +120,9 @@ class Runner:
             num_epochs=self.args.epochs,
             device=self.device,
             checkpoint_path=checkpoint,
+            log_dir=str(output_dir),
+            eval_env=eval_env,
+            eval_interval=1,
         )
 
     def eval(self):
@@ -169,3 +179,30 @@ class Runner:
 
             with torch.no_grad():
                 self.env.rollout(n_timesteps, policy_module, break_when_any_done=True)
+
+            # Evaluate metrics similar to classical algorithms
+            mask = self.env.simulator.agent.agent_features[:, self.env.simulator.agent.DONE] == 1
+            average_travel = torch.mean(
+                self.env.simulator.agent.agent_features[mask, self.env.simulator.agent.ARRIVAL_TIME]
+                - self.env.simulator.agent.agent_features[mask, self.env.simulator.agent.DEPARTURE_TIME]
+            )
+            print("\n=== Simulation Summary ===")
+            print(f"{'Average travel time:':25} {average_travel.item():10.2f} s")
+            print(f"{'Agent Insertion time:':25} {self.env.simulator.inserting_time:10.2f} s")
+            print(f"{'Route Choice time:':25} {self.env.simulator.choice_time:10.2f} s")
+            print(f"{'Core Model time:':25} {self.env.simulator.core_time:10.2f} s")
+            print(f"{'Agent Withdrawal time:':25} {self.env.simulator.withdraw_time:10.2f} s")
+            print("-" * 42)
+            total_time = (
+                self.env.simulator.inserting_time
+                + self.env.simulator.choice_time
+                + self.env.simulator.core_time
+                + self.env.simulator.withdraw_time
+            )
+            print(f"{'Total simulation time:':25} {total_time:10.2f} s")
+
+            print("\n=== Computing Metrics... ===")
+            self.env.simulator.plot_computation_time(self.args.output_dir)
+            self.env.simulator.compute_node_metrics(self.args.output_dir)
+            self.env.simulator.plot_leg_histogram(self.args.output_dir)
+            self.env.simulator.plot_road_optimality(self.args.output_dir)
