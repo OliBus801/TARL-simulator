@@ -27,10 +27,10 @@ class SimulationCoreModel(nn.Module):
         The maximal number of agents in a queue.
     """
 
-    def __init__(self, Nmax: int, device: str, time: int, compute_node_metrics: bool):
+    def __init__(self, Nmax: int, device: str, time: int):
         super(SimulationCoreModel, self).__init__()
         self.direction_mpnn = DirectionMPNN(Nmax=Nmax, time=time).to(device)
-        self.response_mpnn = ResponseMPNN(Nmax=Nmax, time=time, compute_node_metrics=compute_node_metrics).to(device)
+        self.response_mpnn = ResponseMPNN(Nmax=Nmax, time=time).to(device)
         self.time = time
         self.Nmax = Nmax
 

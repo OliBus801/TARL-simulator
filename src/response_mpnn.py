@@ -16,15 +16,12 @@ class ResponseMPNN(MessagePassing):
     time : int
         Time in seconds
     """
-    def __init__(self, Nmax: int = 100, time: int = 0, compute_node_metrics: bool = False):
+    def __init__(self, Nmax: int = 100, time: int = 0):
         MessagePassing.__init__(self, aggr='max', flow='target_to_source') # We reverse the flow and use a max-agregator
         self.NUMBER_OF_AGENT = 3 * Nmax + 1
         FeatureHelpers.__init__(self, Nmax=Nmax)
         self.time = time
-        self.compute_node_metrics = compute_node_metrics
-
-        if self.compute_node_metrics:
-            self.update_history = []  # Initialize an empty list to store update history
+        self.update_history = []  # Initialize an empty list to store update history
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:
         """
@@ -110,8 +107,7 @@ class ResponseMPNN(MessagePassing):
         x_updated[mask_update, self.NUMBER_OF_AGENT] = x[mask_update, self.NUMBER_OF_AGENT] - 1  # Update the number of agents on the road
 
         # Store the update mask and current time in the history
-        if self.compute_node_metrics:
-            self.update_history.append((self.time, mask_update.clone()))
+        self.update_history.append((self.time, mask_update.clone()))
 
         return x_updated
 

@@ -1,15 +1,18 @@
 from dataclasses import dataclass
 from pathlib import Path
 import torch
+import os
 
 from .transportation_simulator import TransportationSimulator
-from .agents.base import DijkstraAgents
+from .agents.base import Agents, DijkstraAgents
 
 @dataclass
 class RunnerArgs:
     algo: str
+    scenario: str
     mode: str
-    steps: int = 1
+    timestep_size: int = 1
+    start_end_time: list[int] = (0, 86400)
     epochs: int = 1
     rollout_steps: int = 32
     seed: int = 0
@@ -26,10 +29,20 @@ class Runner:
         torch.manual_seed(args.seed)
 
     def setup(self):
-        if self.args.algo == "dijkstra":
+        # --- Initialize the simulator and agent based on the algorithm ---
+        if self.args.algo in {"dijkstra", "random"}:
             self.simulator = TransportationSimulator(self.device)
-            self.agent = DijkstraAgents(self.device)
-            self.simulator.agent = self.agent
+            if self.args.algo == "dijkstra":
+                self.agent = DijkstraAgents(self.device)
+            else:
+                self.agent = Agents(self.device)
+
+            self._load_scenario()
+            self.simulator.config_parameters(
+                timestep_size  = self.args.timestep_size,
+                start_time = self.args.start_end_time[0]
+            )
+
         elif self.args.algo in {"mpnn", "mpnn+ppo"}:
             from .reinforcement_learning import SimulatorEnv
             from .agents.mpnn_agent import MPNNPolicyNet, MPNNValueNetSimple
@@ -44,6 +57,26 @@ class Runner:
             self.env.base_env.simulator.agent = self.policy_net
         else:
             raise ValueError(f"Unknown algorithm {self.args.algo}")
+    
+    def _load_scenario(self):
+        """Load the scenario files based on the specified name."""
+        # Load the network from XML file or from a saved file
+        try:
+            self.simulator.load_network(os.path.join("save", self.args.scenario, "network.pt"))
+            print("Network loaded from save file.")
+        except FileNotFoundError:
+            print("Save not found, creating network from XML.")
+            self.simulator.config_network(os.path.join("data", self.args.scenario, "network.xml.gz"))
+            self.simulator.save_network(os.path.join("save", self.args.scenario, "network.pt"))
+
+        # Load agents from XML file or from a saved file
+        try: 
+            self.agent.load(os.path.join("save", self.args.scenario, "population.pt"))
+            print("Agents loaded from save file.")
+        except FileNotFoundError:
+            print("Save not found, creating agents from XML.")
+            self.agent.config_agents_from_xml(os.path.join("data", self.args.scenario, "population.xml.gz"), os.path.join("data", self.args.scenario, "network.xml.gz"))
+            self.agent.save(os.path.join("save", self.args.scenario, "population.pt"))
 
     def train(self):
         if not (self.args.algo == "mpnn+ppo" and self.args.mode == "train"):
@@ -94,9 +127,38 @@ class Runner:
         )
 
     def eval(self):
-        if self.args.algo == "dijkstra":
-            from .algorithms.dijkstra_runner import run_episode
-            run_episode(self.simulator, self.agent, steps=self.args.steps)
+        n_timesteps = (self.args.start_end_time[1] - self.args.start_end_time[0]) // self.args.timestep_size
+
+        if self.args.algo in {"dijkstra", "random"}:
+            from .algorithms.base_runner import run_episode
+            run_episode(self.simulator, self.agent, steps=n_timesteps)
+
+            # Evaluate metrics
+            mask = self.agent.agent_features[:, self.agent.DONE] == 1
+            average_travel = torch.mean(self.agent.agent_features[mask, self.agent.ARRIVAL_TIME] - self.agent.agent_features[mask, self.agent.DEPARTURE_TIME])
+            print("\n=== Simulation Summary ===")
+            print(f"{'Average travel time:':25} {average_travel.item():10.2f} s")
+            print(f"{'Agent Insertion time:':25} {self.simulator.inserting_time:10.2f} s")
+            print(f"{'Route Choice time:':25} {self.simulator.choice_time:10.2f} s")
+            print(f"{'Core Model time:':25} {self.simulator.core_time:10.2f} s")
+            print(f"{'Agent Withdrawal time:':25} {self.simulator.withdraw_time:10.2f} s")
+            print("-" * 42)
+            total_time = (
+                self.simulator.inserting_time
+                + self.simulator.choice_time
+                + self.simulator.core_time
+                + self.simulator.withdraw_time
+            )
+            print(f"{'Total simulation time:':25} {total_time:10.2f} s")
+
+            print("\n=== Computing Metrics... ===")
+            
+            self.simulator.plot_computation_time(self.args.output_dir)
+            self.simulator.compute_node_metrics(self.args.output_dir)
+            self.simulator.plot_leg_histogram(self.args.output_dir)
+            self.simulator.plot_road_optimality(self.args.output_dir)
+
+
         else:
             with torch.no_grad():
-                self.env.rollout(self.args.steps, self.policy_net, break_when_any_done=True)
+                self.env.rollout(n_timesteps, self.policy_net, break_when_any_done=True)

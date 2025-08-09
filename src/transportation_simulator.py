@@ -2,9 +2,6 @@ from lxml import etree
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
-from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr
-from torch_geometric.data.storage import GlobalStorage
-from torch_geometric.utils import to_dense_adj
 from src.feature_helpers import FeatureHelpers
 from src.simulation_core_model import SimulationCoreModel
 from src.agents.base import Agents
@@ -14,7 +11,6 @@ import tqdm
 from collections import defaultdict
 import numpy as np
 import os
-from tensordict import TensorDict
 
 class TransportationSimulator:
     """
@@ -50,8 +46,6 @@ class TransportationSimulator:
 
         # Configuration
         self.timestep = 1 #  Seconds
-        self.leg_histogram = False # Useful to plot leg histogram
-        self.road_optimality = False # Useful to plot road optimality
         self.node_metrics = False # Useful to compute node metrics
 
         # Record
@@ -164,13 +158,14 @@ class TransportationSimulator:
     
     def save_network(self, file_path: str) -> None:
         """
-        Save the current network graph to a picke (pt) file.
+        Save the current network graph to a pickle (pt) file.
 
         Parameters
         ----------
         file_path : str
             Path to save the graph data.
         """
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         torch.save({
             "graph": self.graph,
             "Nmax": self.Nmax,
@@ -202,7 +197,7 @@ class TransportationSimulator:
             Relative or absolute path which contains the MATSim configuration
         ----------
         """
-        self.model_core = SimulationCoreModel(self.Nmax, self.device, self.time, self.node_metrics)
+        self.model_core = SimulationCoreModel(self.Nmax, self.device, self.time)
     
     def set_time(self, time, increment):
         """
@@ -259,16 +254,14 @@ class TransportationSimulator:
 
         self.set_time(self.time + self.timestep, self.timestep)
 
-        if self.leg_histogram:
-            value_on_way = torch.sum(self.agent.agent_features[:, self.agent.ON_WAY])
-            value_done = torch.sum(self.agent.agent_features[:, self.agent.DONE])
-            self.leg_histogram_values.append([value_on_way - self.on_way_before + value_done - self.done_before, 
-                                              value_done - self.done_before, value_on_way, self.time])
-            self.on_way_before = value_on_way
-            self.done_before = value_done
+        value_on_way = torch.sum(self.agent.agent_features[:, self.agent.ON_WAY])
+        value_done = torch.sum(self.agent.agent_features[:, self.agent.DONE])
+        self.leg_histogram_values.append([value_on_way - self.on_way_before + value_done - self.done_before, 
+                                            value_done - self.done_before, value_on_way, self.time])
+        self.on_way_before = value_on_way
+        self.done_before = value_done
         
-        if self.road_optimality:
-            self.road_optimality_values.append((self.time, self.model_core.direction_mpnn.road_optimality_data["delta_travel_time"].cpu()))
+        self.road_optimality_values.append((self.time, self.model_core.direction_mpnn.road_optimality_data["delta_travel_time"].cpu()))
 
     def reset(self):
         h = FeatureHelpers(Nmax=self.Nmax)
@@ -285,101 +278,92 @@ class TransportationSimulator:
         agent_index = (self.graph.x[:, h.HEAD_FIFO]).to(torch.int64)
         return x, edge_attr, edge_index, agent_index
 
-    def config_parameters(self, timestep: float = 20, start_time: float = 0, leg_histogram: bool = False, road_optimality: bool = False, node_metrics: bool = False):
+    def config_parameters(self, timestep_size: float = 1, start_time: int = 0):
         """
         Configure the meta parameters of the simulation.  
         
         Parameters
         ----------
-        timestep : float
-            Time between to update
-        leg_histogram : bool
-            If True, the simulator will record the leg histogram
+        timestep_size : int
+            Time between two updates
+        start_time : int
+            Time at which the simulation starts (in seconds)
         ----------
         """
-        self.timestep = timestep
+        self.timestep = timestep_size
         self.time = start_time
-        self.leg_histogram = leg_histogram
-        self.road_optimality = road_optimality
-        self.node_metrics = node_metrics
 
         # After configuring the parameters, we need to reconfigure the core model
         self.configure_core()
 
 
-    def plot_leg_histogram(self, save_plot: bool = False, output_dir: str = "data/outputs"):
-        if hasattr(self, 'leg_histogram') and self.leg_histogram:
-            if not self.leg_histogram_values:
-                print("No data available for plotting.")
-                return
-            
-            # Make sure the values are on CPU and convert to numpy for plotting
-            values = []
-            for v in self.leg_histogram_values:
-                if isinstance(v, torch.Tensor):
-                    v = v.cpu().numpy()
-                values.append([x.item() if isinstance(x, torch.Tensor) else x for x in v])
+    def plot_leg_histogram(self, output_dir: str = "data/outputs"):
 
-            on_way = []
-            departure = []
-            arrival = []
-            time = []
-
-            on, dep, arr, t = 0, 0, 0, values[0][3]
-            n = 18 // self.timestep  # Number of timesteps to average over (30 minutes)
-
-            for i in range(len(values)):
-                if i % n == 0:
-                    on_way.append(on)
-                    departure.append(dep)
-                    arrival.append(arr)
-                    time.append(t // 60)  # minutes
-                    dep, arr = 0, 0
-                dep += values[i][0]
-                arr += values[i][1]
-                t = values[i][3]
-                on = values[i][2]
-                    
-
-            plt.figure(figsize=(12, 6))
-
-            # Create a primary axis for "On Way"
-            ax1 = plt.gca()
-
-            # Create a secondary axis for "Departure" and "Arrival"
-            ax1.step(time, on_way, label='On Way', color='green')
-            ax1.step(time, departure, label='Departure', color='red', linestyle='--', where="post")
-            ax1.step(time, arrival, label='Arrival', color='blue', linestyle='-.', where="post")
-            ax1.set_ylabel("Number of Agents", color='black')
-            ax1.tick_params(axis='y', labelcolor='black')
-
-            # Fix x-axis to have hours instead of minutes
-            min_hour = min(time) // 60
-            max_hour = max(time) // 60
-            print(f"Min hour: {min_hour}, Max hour: {max_hour}")
-            ax1.set_xticks([i * 60 for i in range(min_hour, max_hour + 1)])
-            ax1.set_xticklabels([str(i) for i in range(min_hour, max_hour + 1)])
-            ax1.set_xlabel("Hour of Day")
-
-            # Combine legends from both axes
-            lines1, labels1 = ax1.get_legend_handles_labels()
-            ax1.legend(lines1, labels1, loc='upper left')
-
-            plt.title("Leg Histogram Over Time")
-            plt.tight_layout()
-
-            if save_plot:
-                filename = "leg_histogram.png"
-                os.makedirs(output_dir, exist_ok=True)
-                plt.savefig(os.path.join(output_dir, filename))
-                print("Leg histogram saved as ", filename)
-            else:
-                plt.show()
-            
-        else:
-            raise Exception("Not configured for plotting leg histogram")
+        if not self.leg_histogram_values:
+            print("No data available for plotting.")
+            return
         
-    def plot_road_optimality(self, road_ids: list, save_plot: bool = False, output_dir: str = "data/outputs"):
+        # Make sure the values are on CPU and convert to numpy for plotting
+        values = []
+        for v in self.leg_histogram_values:
+            if isinstance(v, torch.Tensor):
+                v = v.cpu().numpy()
+            values.append([x.item() if isinstance(x, torch.Tensor) else x for x in v])
+
+        on_way = []
+        departure = []
+        arrival = []
+        time = []
+
+        on, dep, arr, t = 0, 0, 0, values[0][3]
+        n = 18 // self.timestep  # Number of timesteps to average over (30 minutes)
+
+        for i in range(len(values)):
+            if i % n == 0:
+                on_way.append(on)
+                departure.append(dep)
+                arrival.append(arr)
+                time.append(t // 60)  # minutes
+                dep, arr = 0, 0
+            dep += values[i][0]
+            arr += values[i][1]
+            t = values[i][3]
+            on = values[i][2]
+                
+
+        plt.figure(figsize=(12, 6))
+
+        # Create a primary axis for "On Way"
+        ax1 = plt.gca()
+
+        # Create a secondary axis for "Departure" and "Arrival"
+        ax1.step(time, on_way, label='On Way', color='green')
+        ax1.step(time, departure, label='Departure', color='red', linestyle='--', where="post")
+        ax1.step(time, arrival, label='Arrival', color='blue', linestyle='-.', where="post")
+        ax1.set_ylabel("Number of Agents", color='black')
+        ax1.tick_params(axis='y', labelcolor='black')
+
+        # Fix x-axis to have hours instead of minutes
+        min_hour = min(time) // 60
+        max_hour = max(time) // 60
+        print(f"Min hour: {min_hour}, Max hour: {max_hour}")
+        ax1.set_xticks([i * 60 for i in range(min_hour, max_hour + 1)])
+        ax1.set_xticklabels([str(i) for i in range(min_hour, max_hour + 1)])
+        ax1.set_xlabel("Hour of Day")
+
+        # Combine legends from both axes
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        ax1.legend(lines1, labels1, loc='upper left')
+
+        plt.title("Leg Histogram Over Time")
+        plt.tight_layout()
+
+        filename = "leg_histogram.png"
+        os.makedirs(output_dir, exist_ok=True)
+        plt.savefig(os.path.join(output_dir, filename))
+        print("Leg histogram saved as ", filename)
+        
+    def plot_road_optimality(self, output_dir: str = "data/outputs", road_ids: list = []):
         """
         Plot the optimality of roads based on the difference between free-flow travel time
         and actual travel time.
@@ -390,10 +374,10 @@ class TransportationSimulator:
 
         Parameters
         ----------
-        road_ids : list
-            List of road IDs to plot the optimality for.
         save_plot : bool
             If True, save the plot to a file instead of displaying it.
+        road_ids : list
+            List of road IDs to plot the optimality for.
         output_dir : str
             Directory to save the plot if save_plot is True.
         ----------
@@ -420,22 +404,26 @@ class TransportationSimulator:
         plt.figure(figsize=(12, 6))
         t_np = times.detach().cpu().numpy()
         agg_np = agg.detach().cpu().numpy()
-        for road_id in road_ids:
-            plt.plot(t_np, agg_np[:, road_id], label=f"Node {road_id}")
+
+        if road_ids:
+            for road_id in road_ids:
+                plt.plot(t_np, agg_np[:, road_id], label=f"Node {road_id}")
+        else:
+            for road_id in range(agg_np.shape[1]):
+                plt.plot(t_np, agg_np[:, road_id], label=f"Node {road_id}")
 
         plt.xlabel("Time (h)")
         plt.ylabel("Delta Travel Time (s) — sum over outgoing edges")
         plt.title("Road Optimality (Aggregated by Source Node) Over Time")
         plt.legend()
         plt.tight_layout()
-        if save_plot:
-            filename = "road_optimality.png"
-            os.makedirs(output_dir, exist_ok=True)
-            plt.savefig(os.path.join(output_dir, filename))
-            print("Road optimality plot saved as", filename)
-        else:
-            plt.show()
-    
+
+        # Saving the plot
+        filename = "road_optimality.png"
+        os.makedirs(output_dir, exist_ok=True)
+        plt.savefig(os.path.join(output_dir, filename))
+        print("Road optimality plot saved as", filename)
+
     def plot_computation_time(self, output_dir: str = "data/outputs"):
         """
         Plot the computation time for different phases of the simulation in a pie chart.
