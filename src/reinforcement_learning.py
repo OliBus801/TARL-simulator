@@ -99,14 +99,11 @@ class SimulatorEnv(EnvBase):
     A custom environment for reinforcement learning based on the simpson simulator.
     """
 
-    def __init__(self, device: str = 'cpu', network_file: str = "save/Easy_network_PT.pt"):
+    def __init__(self, device: str = 'cpu', timestep_size: int = 1, start_time: int = 0, scenario: str = "Easy"):
         super().__init__(device=device)
         self.simulator = TransportationSimulator(device=device)
-        self.simulator.load_network(network_file)
-        self.simulator.configure_core()
-        self.simulator.config_parameters(timestep=6, leg_histogram=False)
-        self.simulator.time = 3600 * 6 - 60  # Set initial time
-        self.simulator.set_time(self.simulator.time, self.simulator.timestep)
+        self.simulator.load_network(scenario=scenario)
+        self.simulator.config_parameters(timestep_size=timestep_size, start_time=start_time)
         self.to(device)
         
         # Attribute for Env

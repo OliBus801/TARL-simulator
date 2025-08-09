@@ -37,7 +37,8 @@ class Runner:
             else:
                 self.agent = Agents(self.device)
 
-            self._load_scenario()
+            self.simulator.load_network(scenario=self.args.scenario)
+            self.agent.load(os.path.join("save", self.args.scenario, "population.pt"))
             self.simulator.config_parameters(
                 timestep_size  = self.args.timestep_size,
                 start_time = self.args.start_end_time[0]
@@ -47,36 +48,24 @@ class Runner:
             from .reinforcement_learning import SimulatorEnv
             from .agents.mpnn_agent import MPNNPolicyNet, MPNNValueNetSimple
 
-            self.env = SimulatorEnv(device=str(self.device))
+            self.env = SimulatorEnv(
+                device=str(self.device),
+                timestep_size=self.args.timestep_size,
+                start_time=self.args.start_end_time[0],
+                scenario=self.args.scenario,
+            )
+
             edge_index = self.env.simulator.graph.edge_index
             num_nodes = self.env.simulator.graph.x.size(0)
             free_flow = self.env.simulator.graph.x[:, self.env.simulator.h.FREE_FLOW_TIME_TRAVEL]
             free_flow = free_flow[edge_index[1]].to(self.device)
             self.policy_net = MPNNPolicyNet(edge_index, num_nodes, free_flow, device=str(self.device))
+            self.policy_net.load(self.args.scenario)
             self.value_net = MPNNValueNetSimple(edge_index, num_nodes, device=str(self.device))
-            self.env.base_env.simulator.agent = self.policy_net
+            self.value_net.load(self.args.scenario)
+            self.env.simulator.agent = self.policy_net
         else:
             raise ValueError(f"Unknown algorithm {self.args.algo}")
-    
-    def _load_scenario(self):
-        """Load the scenario files based on the specified name."""
-        # Load the network from XML file or from a saved file
-        try:
-            self.simulator.load_network(os.path.join("save", self.args.scenario, "network.pt"))
-            print("Network loaded from save file.")
-        except FileNotFoundError:
-            print("Save not found, creating network from XML.")
-            self.simulator.config_network(os.path.join("data", self.args.scenario, "network.xml.gz"))
-            self.simulator.save_network(os.path.join("save", self.args.scenario, "network.pt"))
-
-        # Load agents from XML file or from a saved file
-        try: 
-            self.agent.load(os.path.join("save", self.args.scenario, "population.pt"))
-            print("Agents loaded from save file.")
-        except FileNotFoundError:
-            print("Save not found, creating agents from XML.")
-            self.agent.config_agents_from_xml(os.path.join("data", self.args.scenario, "population.xml.gz"), os.path.join("data", self.args.scenario, "network.xml.gz"))
-            self.agent.save(os.path.join("save", self.args.scenario, "population.pt"))
 
     def train(self):
         if not (self.args.algo == "mpnn+ppo" and self.args.mode == "train"):
@@ -97,7 +86,7 @@ class Runner:
             spec=self.env.action_spec,
             distribution_class=GraphDistribution,
             in_keys=["logits"],
-            distribution_kwargs={"edge_index": self.env.base_env.simulator.graph.edge_index},
+            distribution_kwargs={"edge_index": self.env.simulator.graph.edge_index},
             return_log_prob=False,
         )
 

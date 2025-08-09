@@ -5,7 +5,7 @@ from scipy.sparse import csgraph
 from scipy.sparse.linalg import eigsh
 import torch
 import torch.nn as nn
-from torch._C import _functorch as fc
+from torch._C import functorch as fc
 from src.feature_helpers import ObservationFeatureHelpers
 from torch_geometric.data import Data
 import networkx as nx

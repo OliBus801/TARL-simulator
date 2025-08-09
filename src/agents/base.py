@@ -324,7 +324,7 @@ class Agents(AgentFeatureHelpers):
         p.parent.mkdir(parents=True, exist_ok=True)
         torch.save(self.agent_features, p)
     
-    def load(self, file_path: str) -> None:
+    def load(self, scenario: str) -> None:
         """
         Loads the agents features from the file path.
 
@@ -333,14 +333,19 @@ class Agents(AgentFeatureHelpers):
         file_path : str
             Path for loading the agent features
         """
-        obj = torch.load(file_path, weights_only=True, map_location=self.device)
-        if isinstance(obj, torch.Tensor):
-            self.agent_features = obj
-        else:
-            raise TypeError(
-            f"Expected a Tensor for 'agent_features', got {type(obj)}. "
-            "Regénère le fichier en ne sauvegardant que des tenseurs."
-        )
+        try:
+            file_path = Path("save", scenario, "population.pt")
+            obj = torch.load(file_path, weights_only=True, map_location=self.device)
+            if isinstance(obj, torch.Tensor):
+                self.agent_features = obj
+            else:
+                raise TypeError(f"Expected a Tensor for 'agent_features', got {type(obj)}. " + "Regenerate the file by saving only tensors.")
+
+        except FileNotFoundError:
+            print(f"Population file {file_path} not found. Trying to load from XML...")
+            file_path = Path("data", scenario, "population.xml.gz")
+            self.config_agents_from_xml(file_path, Path("data", scenario, "network.xml.gz"))
+            self.save(Path("save", scenario, "population.pt"))
 
         # We make sure that the agent ID: 0 will never join the network
         self.agent_features[0, self.DEPARTURE_TIME] = 48*3600

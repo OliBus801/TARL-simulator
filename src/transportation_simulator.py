@@ -172,7 +172,7 @@ class TransportationSimulator:
         }, file_path)
         print(f"Network saved to {file_path}")
     
-    def load_network(self, file_path: str) -> None:
+    def load_network(self, scenario: str) -> None:
         """
         Load the network graph from a picke (pt) file.
 
@@ -181,9 +181,17 @@ class TransportationSimulator:
         file_path : str
             Path to load the graph data from.
         """
-        d = torch.load(file_path, weights_only=False)
-        self.graph = d["graph"]
-        self.Nmax = d["Nmax"]
+        try:
+            file_path = os.path.join("save", scenario, "network.pt")
+            d = torch.load(file_path, weights_only=False)
+            self.graph = d["graph"]
+            self.Nmax = d["Nmax"]
+        except FileNotFoundError:
+            print(f"Network file {file_path} not found. Trying to load from XML...")
+            file_path = os.path.join("data", scenario, "network.xml.gz")
+            self.config_network(file_path)
+            self.save_network(os.path.join("save", scenario, "network.pt"))
+
         self.h = FeatureHelpers(Nmax=self.Nmax)
         
     def configure_core(self):
