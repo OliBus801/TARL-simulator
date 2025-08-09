@@ -87,7 +87,7 @@ class Runner:
             distribution_class=GraphDistribution,
             in_keys=["logits"],
             distribution_kwargs={"edge_index": self.env.simulator.graph.edge_index},
-            return_log_prob=False,
+            return_log_prob=True,
         )
 
         value_tdmodule = TensorDictModule(
@@ -149,5 +149,23 @@ class Runner:
 
 
         else:
+            from tensordict.nn import TensorDictModule
+            from torchrl.modules import ProbabilisticActor
+            from .reinforcement_learning import GraphDistribution
+
+            policy_tdmodule = TensorDictModule(
+                self.policy_net,
+                in_keys=["node_features", "edge_features", "agent_index"],
+                out_keys=["logits"],
+            )
+            policy_module = ProbabilisticActor(
+                module=policy_tdmodule,
+                spec=self.env.action_spec,
+                distribution_class=GraphDistribution,
+                in_keys=["logits"],
+                distribution_kwargs={"edge_index": self.env.simulator.graph.edge_index},
+                return_log_prob=False,
+            )
+
             with torch.no_grad():
-                self.env.rollout(n_timesteps, self.policy_net, break_when_any_done=True)
+                self.env.rollout(n_timesteps, policy_module, break_when_any_done=True)
