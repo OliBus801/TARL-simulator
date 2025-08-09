@@ -9,6 +9,7 @@ from sklearn.neighbors import KDTree
 from datetime import datetime
 import networkx as nx
 from src.feature_helpers import AgentFeatureHelpers, FeatureHelpers
+from pathlib import Path
 
 from scipy.sparse import csgraph
 from scipy.sparse.linalg import eigsh
@@ -319,9 +320,11 @@ class Agents(AgentFeatureHelpers):
         file_path : str
             Path for saving the agent features
         """
-        torch.save(self.agent_features, file_path)
+        p = Path(file_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self.agent_features, p)
     
-    def load(self, file_path: str) -> None:
+    def load(self, scenario: str) -> None:
         """
         Loads the agents features from the file path.
 
@@ -329,9 +332,23 @@ class Agents(AgentFeatureHelpers):
         ----------
         file_path : str
             Path for loading the agent features
-        """        
-        self.agent_features = torch.load(file_path).to(self.device)
-        self.agent_features[0, self.DEPARTURE_TIME] = 25*3600
+        """
+        try:
+            file_path = Path("save", scenario, "population.pt")
+            obj = torch.load(file_path, weights_only=True, map_location=self.device)
+            if isinstance(obj, torch.Tensor):
+                self.agent_features = obj
+            else:
+                raise TypeError(f"Expected a Tensor for 'agent_features', got {type(obj)}. " + "Regenerate the file by saving only tensors.")
+
+        except FileNotFoundError:
+            print(f"Population file {file_path} not found. Trying to load from XML...")
+            file_path = Path("data", scenario, "population.xml.gz")
+            self.config_agents_from_xml(file_path, Path("data", scenario, "network.xml.gz"))
+            self.save(Path("save", scenario, "population.pt"))
+
+        # We make sure that the agent ID: 0 will never join the network
+        self.agent_features[0, self.DEPARTURE_TIME] = 48*3600
 
     def choice(self, graph: Data, h: FeatureHelpers):
         """
