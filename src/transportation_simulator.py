@@ -448,8 +448,14 @@ class TransportationSimulator:
         """
 
         times = [self.inserting_time, self.choice_time, self.core_time, self.withdraw_time]
+        # Replace NaN values with -1
+        times = [t if not np.isnan(t) else -1 for t in times]
         labels = ['Inserting', 'Choice', 'Core', 'Withdraw']
         total = sum(times)
+
+        if total == 0:
+            print("No computation time data available for plotting.")
+            return None
 
         # Custom formatter to include bold percentage and italic value in seconds
         def format_label(pct, allvals):
