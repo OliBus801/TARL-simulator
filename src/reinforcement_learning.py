@@ -53,6 +53,10 @@ class GraphDistribution(Distribution):
         else:
             raise NotImplemented
 
+    @property
+    def mode(self):
+        return self.deterministic_sample
+
 
     def sample(self, sample_shape=torch.Size()):
 
