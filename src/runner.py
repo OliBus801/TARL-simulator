@@ -110,6 +110,7 @@ class Runner:
             start_time=self.args.start_end_time[0],
             scenario=self.args.scenario,
         )
+        eval_env.simulator.agent = self.policy_net
 
         ppo_train(
             self.env,
