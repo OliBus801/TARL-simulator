@@ -6,7 +6,7 @@ from torchrl.objectives.value import GAE
 from torchrl.data.replay_buffers import ReplayBuffer
 from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
 from torchrl.data.replay_buffers.storages import LazyTensorStorage
-from torchrl.envs.utils import ExplorationType
+from torchrl.envs.utils import set_exploration_type, ExplorationType
 from torch.utils.tensorboard import SummaryWriter
 
 def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_batch=32, num_epochs=1,
@@ -91,9 +91,8 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
             return
         start = time.perf_counter()
         with torch.no_grad():
-            td = eval_env.rollout(frames_per_batch, policy_module,
-                                  exploration_type=exploration_type,
-                                  break_when_any_done=True)
+            with set_exploration_type(exploration_type):
+                td = eval_env.rollout(frames_per_batch, policy_module, break_when_any_done=True)
         comp_ms = (time.perf_counter() - start) * 1000.0
         rewards = td["next", "reward"].view(-1)
         avg_return = rewards.sum().item()

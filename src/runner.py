@@ -3,6 +3,7 @@ from pathlib import Path
 import torch
 import os
 
+from .reinforcement_learning import SimulatorEnv
 from .transportation_simulator import TransportationSimulator
 from .agents.base import Agents, DijkstraAgents
 
@@ -45,7 +46,6 @@ class Runner:
             )
 
         elif self.args.algo in {"mpnn", "mpnn+ppo"}:
-            from .reinforcement_learning import SimulatorEnv
             from .agents.mpnn_agent import MPNNPolicyNet, MPNNValueNetSimple
 
             self.env = SimulatorEnv(
