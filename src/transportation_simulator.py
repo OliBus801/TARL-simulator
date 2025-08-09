@@ -5,6 +5,8 @@ from torch_geometric.data import Data
 from src.feature_helpers import FeatureHelpers
 from src.simulation_core_model import SimulationCoreModel
 from src.agents.base import Agents
+import matplotlib
+matplotlib.use("Agg")  # Use a non-interactive backend for saving plots
 import matplotlib.pyplot as plt
 import time
 import tqdm
@@ -305,11 +307,11 @@ class TransportationSimulator:
         self.configure_core()
 
 
-    def plot_leg_histogram(self, output_dir: str = "data/outputs"):
+    def plot_leg_histogram(self, output_dir: str | None = "data/outputs"):
 
         if not self.leg_histogram_values:
             print("No data available for plotting.")
-            return
+            return None
         
         # Make sure the values are on CPU and convert to numpy for plotting
         values = []
@@ -339,10 +341,7 @@ class TransportationSimulator:
             on = values[i][2]
                 
 
-        plt.figure(figsize=(12, 6))
-
-        # Create a primary axis for "On Way"
-        ax1 = plt.gca()
+        fig, ax1 = plt.subplots(figsize=(12, 6))
 
         # Create a secondary axis for "Departure" and "Arrival"
         ax1.step(time, on_way, label='On Way', color='green')
@@ -363,15 +362,18 @@ class TransportationSimulator:
         lines1, labels1 = ax1.get_legend_handles_labels()
         ax1.legend(lines1, labels1, loc='upper left')
 
-        plt.title("Leg Histogram Over Time")
-        plt.tight_layout()
+        ax1.set_title("Leg Histogram Over Time")
+        fig.tight_layout()
 
-        filename = "leg_histogram.png"
-        os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(os.path.join(output_dir, filename))
-        print("Leg histogram saved as ", filename)
+        if output_dir is not None:
+            filename = "leg_histogram.png"
+            os.makedirs(output_dir, exist_ok=True)
+            fig.savefig(os.path.join(output_dir, filename))
+            print("Leg histogram saved as ", filename)
+
+        return fig
         
-    def plot_road_optimality(self, output_dir: str = "data/outputs", road_ids: list = []):
+    def plot_road_optimality(self, output_dir: str | None = "data/outputs", road_ids: list = []):
         """
         Plot the optimality of roads based on the difference between free-flow travel time
         and actual travel time.
@@ -392,7 +394,7 @@ class TransportationSimulator:
         """
         if not self.road_optimality_values:
             print("No road optimality data available for plotting.")
-            return
+            return None
         
         # Number of nodes
         num_nodes = len(self.graph.x)
@@ -409,28 +411,30 @@ class TransportationSimulator:
         agg.scatter_add_(1, origin_idx.unsqueeze(0).expand(v_mat.size(0), -1), v_mat)
 
         # --- Plot (CPU) ---
-        plt.figure(figsize=(12, 6))
+        fig, ax = plt.subplots(figsize=(12, 6))
         t_np = times.detach().cpu().numpy()
         agg_np = agg.detach().cpu().numpy()
 
         if road_ids:
             for road_id in road_ids:
-                plt.plot(t_np, agg_np[:, road_id], label=f"Node {road_id}")
+                ax.plot(t_np, agg_np[:, road_id], label=f"Node {road_id}")
         else:
             for road_id in range(agg_np.shape[1]):
-                plt.plot(t_np, agg_np[:, road_id], label=f"Node {road_id}")
+                ax.plot(t_np, agg_np[:, road_id], label=f"Node {road_id}")
 
-        plt.xlabel("Time (h)")
-        plt.ylabel("Delta Travel Time (s) — sum over outgoing edges")
-        plt.title("Road Optimality (Aggregated by Source Node) Over Time")
-        plt.legend()
-        plt.tight_layout()
+        ax.set_xlabel("Time (h)")
+        ax.set_ylabel("Delta Travel Time (s) — sum over outgoing edges")
+        ax.set_title("Road Optimality (Aggregated by Source Node) Over Time")
+        ax.legend()
+        fig.tight_layout()
 
-        # Saving the plot
-        filename = "road_optimality.png"
-        os.makedirs(output_dir, exist_ok=True)
-        plt.savefig(os.path.join(output_dir, filename))
-        print("Road optimality plot saved as", filename)
+        if output_dir is not None:
+            filename = "road_optimality.png"
+            os.makedirs(output_dir, exist_ok=True)
+            fig.savefig(os.path.join(output_dir, filename))
+            print("Road optimality plot saved as", filename)
+
+        return fig
 
     def plot_computation_time(self, output_dir: str = "data/outputs"):
         """
@@ -446,8 +450,14 @@ class TransportationSimulator:
         """
 
         times = [self.inserting_time, self.choice_time, self.core_time, self.withdraw_time]
+        # Replace NaN values with -1
+        times = [t if not np.isnan(t) else -1 for t in times]
         labels = ['Inserting', 'Choice', 'Core', 'Withdraw']
         total = sum(times)
+
+        if total == 0:
+            print("No computation time data available for plotting.")
+            return None
 
         # Custom formatter to include bold percentage and italic value in seconds
         def format_label(pct, allvals):
@@ -473,7 +483,7 @@ class TransportationSimulator:
         plt.savefig(os.path.join(output_dir, filename))
         print("Computation time plot saved as", filename)
     
-    def compute_node_metrics(self, output_dir: str = "data/outputs"):
+    def compute_node_metrics(self, output_dir: str | None = "data/outputs"):
         """
         Compute metrics for each node in the graph, such as average V/C ratio, 
         standard deviation of V/C ratio, and hourly traffic count.
@@ -560,9 +570,10 @@ class TransportationSimulator:
         cols = ['node_id', 'avg_vc', 'std_vc'] + [f'count_{h}h' for h in range(num_hours)]
         df = df[cols]
         # Sauvegarde du DataFrame en CSV
-        os.makedirs(output_dir, exist_ok=True)
-        df.to_csv(os.path.join(output_dir, 'node_metrics.csv'), index=False)
-        print(f"Wrote {os.path.join(output_dir, 'node_metrics.csv')}")
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            df.to_csv(os.path.join(output_dir, 'node_metrics.csv'), index=False)
+            print(f"Wrote {os.path.join(output_dir, 'node_metrics.csv')}")
 
         # Reconstruction du dict de sortie
         node_metrics = {

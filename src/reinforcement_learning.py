@@ -7,6 +7,7 @@ from tensordict import TensorDict, TensorDictBase
 
 import torch
 from torch_scatter import scatter_softmax, scatter_max
+import time
 
 from src.transportation_simulator import TransportationSimulator
 
@@ -52,6 +53,10 @@ class GraphDistribution(Distribution):
             self.deterministic_sample[n, index] = 1
         else:
             raise NotImplemented
+
+    @property
+    def mode(self):
+        return self.deterministic_sample
 
 
     def sample(self, sample_shape=torch.Size()):
@@ -156,8 +161,8 @@ class SimulatorEnv(EnvBase):
         self.terminated_spec = BoundedTensorSpec(
             shape=(1,),
             dtype=torch.bool,
-            minimum=0,
-            maximum=1,
+            low=torch.tensor(0, dtype=torch.bool, device=device),
+            high=torch.tensor(1, dtype=torch.bool, device=device),
             device=device
         )
 
@@ -171,11 +176,23 @@ class SimulatorEnv(EnvBase):
         self.rng.manual_seed(seed)
         return seed
 
-    def _reset(self, tensordict: TensorDictBase = None) -> TensorDictBase: 
+    def _reset(self, tensordict: TensorDictBase = None) -> TensorDictBase:
         """
         Reset the environment to its initial state.
         """
         self.simulator.reset()
+        # reset logs and timers so that evaluation metrics only reflect the new episode
+        self.simulator.inserting_time = 0
+        self.simulator.choice_time = 0
+        self.simulator.core_time = 0
+        self.simulator.withdraw_time = 0
+        self.simulator.leg_histogram_values = []
+        self.simulator.road_optimality_values = []
+        self.simulator.on_way_before = 0
+        self.simulator.done_before = 0
+        if hasattr(self.simulator.model_core.response_mpnn, "update_history"):
+            self.simulator.model_core.response_mpnn.update_history = []
+
         self.simulator.set_time(3600 * 6 - 60, 6)
         x, edge_attr, edge_index, agent_index = self.simulator.state()
         self.simulator.agent.reset()
@@ -201,17 +218,41 @@ class SimulatorEnv(EnvBase):
         node_origin = self.simulator.graph.edge_index[0][mask]
         node_destination = self.simulator.graph.edge_index[1][mask]
         h = self.simulator.h
+
+        # Apply action (choice phase)
+        b = time.time()
         self.simulator.graph.x[node_origin, h.SELECTED_ROAD] = node_destination.to(torch.float)
+        e = time.time()
+        self.simulator.choice_time += e - b
+
+        # Core model
+        b = e
         self.simulator.graph = self.simulator.model_core(self.simulator.graph)
+        e = time.time()
+        self.simulator.core_time += e - b
+
+        # Withdraw agents
+        b = e
         last_people = self.simulator.graph.x[:, h.HEAD_FIFO].to(torch.long)
         self.simulator.graph.x = self.simulator.agent.withdraw_agent_from_network(self.simulator.graph.x, h)
+        e = time.time()
+        self.simulator.withdraw_time += e - b
+
+        # Insert agents
+        b = e
         self.simulator.graph.x = self.simulator.agent.insert_agent_into_network(self.simulator.graph.x, h)
+        e = time.time()
+        self.simulator.inserting_time += e - b
+
         new_state = self.simulator.graph.x[:, h.NUMBER_OF_AGENT]
         reward = torch.zeros(1, dtype=torch.float32, device=self.device)
         # Compute reward
         arrived = self.simulator.agent.agent_features[last_people, self.simulator.agent.DONE].to(torch.bool)
         rewardable_people = last_people[arrived]
-        time_travel = self.simulator.agent.agent_features[rewardable_people, self.simulator.agent.ARRIVAL_TIME] - self.simulator.agent.agent_features[rewardable_people, self.simulator.agent.DEPARTURE_TIME]
+        time_travel = (
+            self.simulator.agent.agent_features[rewardable_people, self.simulator.agent.ARRIVAL_TIME]
+            - self.simulator.agent.agent_features[rewardable_people, self.simulator.agent.DEPARTURE_TIME]
+        )
         individual_reward = 0 + torch.sum(100 * 600 / time_travel)
         reward = - torch.sum(self.simulator.graph.x[:, h.NUMBER_OF_AGENT])
         reward = torch.sum(reward).flatten()
@@ -224,10 +265,29 @@ class SimulatorEnv(EnvBase):
             done = torch.tensor(True)
         else:
             done = torch.tensor(False)
+
+        # Log histogram and optimality metrics
+        value_on_way = torch.sum(self.simulator.agent.agent_features[:, self.simulator.agent.ON_WAY])
+        value_done = torch.sum(self.simulator.agent.agent_features[:, self.simulator.agent.DONE])
+        self.simulator.leg_histogram_values.append([
+            value_on_way - self.simulator.on_way_before + value_done - self.simulator.done_before,
+            value_done - self.simulator.done_before,
+            value_on_way,
+            self.simulator.time,
+        ])
+        self.simulator.on_way_before = value_on_way
+        self.simulator.done_before = value_done
+        self.simulator.road_optimality_values.append(
+            (
+                self.simulator.time,
+                self.simulator.model_core.direction_mpnn.road_optimality_data["delta_travel_time"].cpu(),
+            )
+        )
+
         # Compute the next state
         node_features, edge_features, edge_index, agent_index = self.simulator.state()
         terminated = done
-        
+
         return TensorDict({
             "node_features": node_features,
             "edge_features": edge_features,
