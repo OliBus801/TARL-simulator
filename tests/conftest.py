@@ -18,12 +18,12 @@ def device():
 @pytest.fixture
 def agents(device):
     agent = Agents(device)
-    # create two simple agents ready to depart from road 0 and arrive at road 0
+    # Create two simple agents. They leave from node 0 and go to node 1.
+    # They should leave at 0 sec and arrive a minute later.
     agent.agent_features = torch.tensor([
-        [0.0, 0.0, 0.0, 0.0, 30.0, 0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 25.0, 1.0, 0.0, 0.0, 0.0],
+        [0, 1, 0, 60, 30, 0, 1, 0, 0],
+        [0, 1, 0, 60, 30, 1, 0, 0, 0],
     ])
-    agent.time = 0
     return agent
 
 
@@ -39,7 +39,7 @@ def response_mpnn():
 
 @pytest.fixture
 def core(device):
-    return SimulationCoreModel(Nmax=100, device=device, time=0)
+    return SimulationCoreModel(Nmax=2, device=device, time=0)
 
 
 @pytest.fixture

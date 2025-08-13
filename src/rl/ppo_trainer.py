@@ -5,6 +5,7 @@ from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 from torchrl.envs.utils import set_exploration_type, ExplorationType
 from torch.utils.tensorboard import SummaryWriter
+from tqdm.auto import tqdm
 
 def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_batch=32, num_epochs=1,
               sub_batch_size=32, device=torch.device("cpu"), checkpoint_path=None,
@@ -28,6 +29,8 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
 
     writer = SummaryWriter(log_dir) if log_dir is not None else None
     global_step = 0
+    pbar = tqdm(total=total_frames, desc="PPO training", disable=total_frames is None)
+
 
     advantage_module = GAE(
         gamma=0.99,
@@ -70,6 +73,7 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
         writer.add_scalar("approx_kl", loss_vals.get("approx_kl", torch.tensor(float("nan"))).item(), global_step)
         writer.add_scalar("clip_fraction", loss_vals.get("clip_fraction", torch.tensor(float("nan"))).item(), global_step)
         writer.add_scalar("grad_global_norm", grad_norm, global_step)
+        writer.flush()
 
         # Transport metrics
         if hasattr(env, "simulator"):
@@ -97,7 +101,8 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
         start = time.perf_counter()
         with torch.no_grad():
             with set_exploration_type(exploration_type):
-                td = eval_env.rollout(frames_per_batch, policy_module, break_when_any_done=True)
+                n_steps = (eval_env.end_time - eval_env.start_time) // eval_env.simulator.timestep
+                td = eval_env.rollout(n_steps, policy_module, break_when_any_done=True)
         comp_ms = (time.perf_counter() - start) * 1000.0
         rewards = td["next", "reward"].view(-1)
         avg_return = rewards.sum().item()
@@ -130,6 +135,8 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
                     writer.add_histogram(f"{prefix}/nodes_metrics/std_vc", std_vc, global_step)
             except Exception:
                 pass
+
+        writer.flush()
 
     for i, tensordict_data in enumerate(collector):
         global_step += frames_per_batch
@@ -178,6 +185,7 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
             avg_grad_norm = 0.0
 
         _log_training(i, tensordict_data, avg_loss_vals, avg_loss, avg_grad_norm)
+        pbar.update(frames_per_batch)
         if eval_interval and i % eval_interval == 0:
             _evaluate("eval", ExplorationType.MODE)
             if stochastic_eval:
@@ -185,6 +193,7 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
 
     if writer is not None:
         writer.close()
+    pbar.close()
 
     if checkpoint_path is not None:
         try:

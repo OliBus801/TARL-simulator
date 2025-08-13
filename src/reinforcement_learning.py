@@ -15,6 +15,7 @@ from src.transportation_simulator import TransportationSimulator
 class GraphDistribution(Distribution):
 
     def __init__(self, logits: torch.Tensor, edge_index: torch.Tensor, temperature: float = 1.0):
+        
         super().__init__()
         assert not torch.isnan(logits).any()
         self.edge_index = edge_index
