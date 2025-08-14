@@ -71,20 +71,26 @@ class TransportationSimulator:
         # Check start time for time measurement
         start_time = time.time()
 
+        # Determine the actual file to use (.xml.gz or .xml)
+        gz_path = file_path + ".xml.gz"
+        xml_path = file_path + ".xml"
+        if os.path.exists(gz_path):
+            actual_path = gz_path
+        elif os.path.exists(xml_path):
+            actual_path = xml_path
+        else:
+            raise FileNotFoundError(f"Neither {gz_path} nor {xml_path} exists.")
+
         # Print the file path
-        print(f"Configuring network from file: {file_path}")
+        print(f"Configuring network from file: {actual_path}")
 
         # Try to open and parse the file 
         try:
-            # Check if the file exists
-            if not os.path.exists(file_path):
-                raise FileNotFoundError(f"The file {file_path} does not exist.")
-            tree = etree.parse(file_path)
+            tree = etree.parse(actual_path)
             root = tree.getroot()
-    
         except OSError as e:
             print(f"Error reading the file: {e}")
-        
+            return
 
         # Extract the main information
         links = root.find("links")
@@ -156,7 +162,7 @@ class TransportationSimulator:
 
         # Print the execution time
         end_time = time.time()
-        print(f"Network configured in {end_time - start_time:.2f} seconds")
+        print(f"🕒 | Network configured in {end_time - start_time:.2f} seconds")
     
     def save_network(self, file_path: str) -> None:
         """
@@ -172,8 +178,8 @@ class TransportationSimulator:
             "graph": self.graph,
             "Nmax": self.Nmax,
         }, file_path)
-        print(f"Network saved to {file_path}")
-    
+        print(f"💾 | Network saved to {file_path}")
+
     def load_network(self, scenario: str) -> None:
         """
         Load the network graph from a picke (pt) file.
@@ -188,9 +194,10 @@ class TransportationSimulator:
             d = torch.load(file_path, weights_only=False)
             self.graph = d["graph"]
             self.Nmax = d["Nmax"]
+            print(f"🚦 | Network loaded from {file_path}")
         except FileNotFoundError:
-            print(f"Network file {file_path} not found. Trying to load from XML...")
-            file_path = os.path.join("data", scenario, "network.xml.gz")
+            print(f"📁 | Network save file {file_path} not found. Trying to load from XML...")
+            file_path = os.path.join("data", scenario, "network")
             self.config_network(file_path)
             self.save_network(os.path.join("save", scenario, "network.pt"))
 

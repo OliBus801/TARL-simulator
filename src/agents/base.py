@@ -1,18 +1,13 @@
 import numpy as np
 from lxml import etree
-
 import torch
-import torch.nn as nn
-from torch_geometric.utils import to_dense_adj, to_scipy_sparse_matrix, to_networkx, degree
+import os
+from torch_geometric.utils import to_dense_adj, to_networkx
 from torch_geometric.data import Data
 from sklearn.neighbors import KDTree
 from datetime import datetime
 import networkx as nx
 from src.feature_helpers import AgentFeatureHelpers, FeatureHelpers
-from pathlib import Path
-
-from scipy.sparse import csgraph
-from scipy.sparse.linalg import eigsh
 
 
 class Agents(AgentFeatureHelpers):
@@ -38,7 +33,7 @@ class Agents(AgentFeatureHelpers):
 
 
 
-    def config_agents_from_xml(self, agent_file_path: str, node_path: str) -> None:
+    def config_agents_from_xml(self, scenario: str) -> None:
         """
         Parse and configurate agents thanks to a MATSim XML file.
 
@@ -100,24 +95,36 @@ class Agents(AgentFeatureHelpers):
             if "age" not in attrs: attrs["age"] = "20"  # Default value if not present
             return attrs
 
+        def get_actual_path(file_path: str) -> str:
+            gz_path = file_path + ".xml.gz"
+            xml_path = file_path + ".xml"
+            if os.path.exists(gz_path):
+                return gz_path
+            elif os.path.exists(xml_path):
+                return xml_path
+            else:
+                raise FileNotFoundError(f"Neither {gz_path} nor {xml_path} exists.")
+
+        agent_file_path = get_actual_path(os.path.join("data", scenario, "population"))
+        network_file_path = get_actual_path(os.path.join("data", scenario, "network"))
 
         # Try to open the two files and see if these contains information
         try:
-            tree = etree.parse(agent_file_path) 
+            tree = etree.parse(agent_file_path)
             population = tree.getroot()
-            tree_node = etree.parse(node_path)
-            root_node = tree_node.getroot()
+            tree = etree.parse(network_file_path)
+            network = tree.getroot()
         except OSError as e:
             raise RuntimeError(f"Error reading the file: {e}")
         
         if population is None:
             raise ValueError("The XML file does not contain a 'population' element.")
         
-        nodes = root_node.find("nodes")
+        nodes = network.find("nodes")
         if nodes is None:
             raise ValueError("The XML file does not contain a 'nodes' element.")
         
-        links = root_node.find("links")
+        links = network.find("links")
         if links is None:
             raise ValueError("The XML file does not contain a 'links' element.")
         
@@ -320,9 +327,9 @@ class Agents(AgentFeatureHelpers):
         file_path : str
             Path for saving the agent features
         """
-        p = Path(file_path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(self.agent_features, p)
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        torch.save(self.agent_features, file_path)
+        print(f"💾 | Population saved to {file_path}")
     
     def load(self, scenario: str) -> None:
         """
@@ -334,18 +341,18 @@ class Agents(AgentFeatureHelpers):
             Path for loading the agent features
         """
         try:
-            file_path = Path("save", scenario, "population.pt")
+            file_path = os.path.join("save", scenario, "population.pt")
             obj = torch.load(file_path, weights_only=True, map_location=self.device)
             if isinstance(obj, torch.Tensor):
                 self.agent_features = obj
             else:
                 raise TypeError(f"Expected a Tensor for 'agent_features', got {type(obj)}. " + "Regenerate the file by saving only tensors.")
+            print(f"👥 | Population loaded from {file_path}")
 
         except FileNotFoundError:
-            print(f"Population file {file_path} not found. Trying to load from XML...")
-            file_path = Path("data", scenario, "population.xml.gz")
-            self.config_agents_from_xml(file_path, Path("data", scenario, "network.xml.gz"))
-            self.save(Path("save", scenario, "population.pt"))
+            print(f"📁 | Population save file {file_path} not found. Trying to load from XML...")
+            self.config_agents_from_xml(scenario)
+            self.save(os.path.join("save", scenario, "population.pt"))
 
         # We make sure that the agent ID: 0 will never join the network
         self.agent_features[0, self.DEPARTURE_TIME] = 48*3600
