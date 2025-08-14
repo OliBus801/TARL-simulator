@@ -33,55 +33,29 @@ class Agents(AgentFeatureHelpers):
 
 
 
-    def config_agents_from_xml(self, scenario: str) -> None:
-        """
-        Parse and configurate agents thanks to a MATSim XML file.
-
-        Parameters
-        ----------
-        agent_file_path : str
-            A string that contains the path for the agent XML description file from MATSim
-        node_path : str
-            A string that contains the path for the traffic network XML description file from
-            MATSim
-        """
-
+    def config_agents_from_xml(self, scenario: str, *, verbose: bool = False) -> None:
+        """Parse MATSim population and network files to configure agents."""
+        
         def extract_activities(plan_elem):
-            # The name of the 'Activity' element is not the same for all scenarios
             acts = plan_elem.findall("act")
             if not acts:
                 acts = plan_elem.findall("activity")
             return acts
-
+        
         def extract_departure_time(act_elem):
-            # Extract the departure time from end_time if it exists, else returns None
             time_str = act_elem.get("end_time")
             if not time_str:
-                return None
+                return 0
             for fmt in ("%H:%M:%S", "%H:%M"):
                 try:
                     t = datetime.strptime(time_str, fmt)
                     return t.hour * 3600 + t.minute * 60 + t.second
                 except ValueError:
                     continue
-            return None
+            return 0
         
         def parse_person_attributes(person_elem) -> dict:
-            """
-            Parse a 'person' XML element to retrieve their attributes.
-            Should be robust to different types of XML structure of MATSim
-
-            Parameters
-            ----------
-            person_elem : xml.etree.ElementTree.Element
-                The XML element of the person to parse
-            
-            Returns
-            -------
-            dict
-                A dictionnary [str, str] containing all attributes of the agents
-            """
-            attrs = dict(person_elem.attrib)  # direct attributes
+            attrs = dict(person_elem.attrib)
             attributes_elem = person_elem.find("attributes")
             if attributes_elem is not None:
                 for attr in attributes_elem.findall("attribute"):
@@ -89,145 +63,133 @@ class Agents(AgentFeatureHelpers):
                     value = attr.text
                     if name and value:
                         attrs[name] = value
-            if "carAvail" not in attrs: attrs["car_avail"] = "always"  # Default value if not present
-            if "sex" not in attrs: attrs["sex"] = "m"  # Default value if not present
-            if "employed" not in attrs: attrs["employed"] = "no"  # Default value if not present
-            if "age" not in attrs: attrs["age"] = "20"  # Default value if not present
+            attrs.setdefault("car_avail", attrs.get("carAvail", "always"))
+            attrs.setdefault("sex", "m")
+            attrs.setdefault("employed", "no")
+            attrs.setdefault("age", "20")
             return attrs
-
+        
         def get_actual_path(file_path: str) -> str:
             gz_path = file_path + ".xml.gz"
             xml_path = file_path + ".xml"
             if os.path.exists(gz_path):
                 return gz_path
-            elif os.path.exists(xml_path):
+            if os.path.exists(xml_path):
                 return xml_path
-            else:
-                raise FileNotFoundError(f"Neither {gz_path} nor {xml_path} exists.")
-
+            raise FileNotFoundError(f"Neither {gz_path} nor {xml_path} exists.")
+        
         agent_file_path = get_actual_path(os.path.join("data", scenario, "population"))
         network_file_path = get_actual_path(os.path.join("data", scenario, "network"))
-
-        # Try to open the two files and see if these contains information
+        
         try:
-            tree = etree.parse(agent_file_path)
-            population = tree.getroot()
-            tree = etree.parse(network_file_path)
-            network = tree.getroot()
+            population = etree.parse(agent_file_path).getroot()
+            network = etree.parse(network_file_path).getroot()
         except OSError as e:
             raise RuntimeError(f"Error reading the file: {e}")
         
         if population is None:
             raise ValueError("The XML file does not contain a 'population' element.")
-        
         nodes = network.find("nodes")
         if nodes is None:
             raise ValueError("The XML file does not contain a 'nodes' element.")
-        
         links = network.find("links")
         if links is None:
             raise ValueError("The XML file does not contain a 'links' element.")
         
-        # Build node positions
-        node_positions = {
-            node.get("id"): (float(node.get("x")), float(node.get("y")))
-            for node in nodes
-        }
-        
-        # Build link positions
+        node_positions = {node.get("id"): (float(node.get("x")), float(node.get("y"))) for node in nodes}
         link_positions = np.zeros((len(links), 2))
         for i, link in enumerate(links):
-            node_A = link.get("from")
-            node_B = link.get("to")
-            link_positions[i, 0] = (node_positions[node_A][0] + node_positions[node_B][0]) / 2
-            link_positions[i, 1] = (node_positions[node_A][1] + node_positions[node_B][1]) / 2
+            a, b = link.get("from"), link.get("to")
+            link_positions[i, 0] = (node_positions[a][0] + node_positions[b][0]) / 2
+            link_positions[i, 1] = (node_positions[a][1] + node_positions[b][1]) / 2
         
-        # Parse agents
-        x_pos, y_pos = [], []
-        valid_agents = []
+        import time
+        t0 = time.time()
+        tree = KDTree(link_positions)
+        kd_time_ms = (time.time() - t0) * 1000
+        
+        rows = []
+        trips_per_agent = []
+        exclude = {"car_avail_not_always":0, "no_plan":0, "too_few_activities":0, "no_valid_trip":0}
+        invalid_trip_coords = 0
         total_agents = 0
         selected_agents = 0
-
-        for person in population:
-            if isinstance(person, etree._Comment): continue
-
-            total_agents += 1
-
-            # Retrieve agent attributes and put some default values
-            attrs = parse_person_attributes(person)
-            car_avail = attrs.get("car_avail", attrs.get("carAvail", "")).lower() # Attribute has different name in different scenario
-
-            if car_avail != "always": continue
-
-            plan = person.find("plan")
-            if plan is None: continue
-
-            # Retrieve agent activities
-            acts = extract_activities(plan)
-
-            # We only keep exactly two activities for each agent
-            # TODO : Make the number of activities dynamic for each agent
-            if len(acts) < 2: continue
-
-            try:
-                x0 = float(acts[0].get("x"))
-                y0 = float(acts[0].get("y"))
-                x1 = float(acts[1].get("x"))
-                y1 = float(acts[1].get("y"))
-            except (TypeError, ValueError):
-                continue # Skip malformed coordinates
-                
-            x_pos.extend([x0, x1])
-            y_pos.extend([y0, y1])
-            valid_agents.append((person, attrs, acts))
-            selected_agents += 1
-
         
-        print(f"{selected_agents}/{total_agents} agents selected (car_avail='always' and ≥2 activities) ({100 * selected_agents / total_agents:.2f}%)")
-
-
-        # Fuse the x and y position
-        position = np.stack((x_pos, y_pos), axis=1)
-
-        # Use the KDBall from sklearn
-        tree = KDTree(link_positions)
-        _, index = tree.query(position, k=1)
-
-        # Fetch agent features
-        self.agent_features = torch.zeros((len(position), len(self)), dtype=torch.float32).to(self.device)
-
-        for i, (person, attrs, acts) in enumerate(valid_agents):
-            # We assume a default value for sex, employed and age if attribute is not present
-            # TODO: Find a fix for this, IPF or something that makes sense
+        for person in population:
+            if isinstance(person, etree._Comment):
+                continue
+            total_agents += 1
+            attrs = parse_person_attributes(person)
+            car_avail = attrs.get("car_avail", attrs.get("carAvail", "")).lower()
+            if car_avail != "always":
+                exclude["car_avail_not_always"] += 1
+                continue
+            plan = person.find("plan")
+            if plan is None:
+                exclude["no_plan"] += 1
+                continue
+            acts = extract_activities(plan)
+            if len(acts) < 2:
+                exclude["too_few_activities"] += 1
+                continue
             sex = 1 if attrs.get("sex", "m").lower() == "f" else 0
             employed = 1 if attrs.get("employed", "no").lower() == "yes" else 0
             age = float(attrs.get("age", 0))
-
-            # Row 1 (origin)
-            self.agent_features[2*i, self.SEX] = sex
-            self.agent_features[2*i, self.EMPLOYMENT_STATUS] = employed
-            self.agent_features[2*i, self.AGE] = age
-            self.agent_features[2*i, self.ORIGIN] = index[2*i].item()
-            self.agent_features[2*i, self.DESTINATION] = index[2*i+1].item()
-            dep_time = extract_departure_time(acts[0])
-            if dep_time is not None:
-                self.agent_features[2*i, self.DEPARTURE_TIME] = dep_time
-
-            # Row 2 (destination)
-            self.agent_features[2*i+1, self.SEX] = sex
-            self.agent_features[2*i+1, self.EMPLOYMENT_STATUS] = employed
-            self.agent_features[2*i+1, self.AGE] = age
-            self.agent_features[2*i+1, self.ORIGIN] = index[2*i+1].item()
-            self.agent_features[2*i+1, self.DESTINATION] = index[2*i].item()
-            dep_time_2 = extract_departure_time(acts[1])
-            if dep_time_2 is not None:
-                self.agent_features[2*i+1, self.DEPARTURE_TIME] = dep_time_2
-
-        # Ensure that the agent ID: 0 will be not add in the list of agents
-        self.agent_features[0, self.DEPARTURE_TIME] = 25*3600
-        print(f"Final agent_features shape: {self.agent_features.shape}")
-
-
+            valid_trips = 0
+            for i in range(len(acts)-1):
+                try:
+                    x0 = float(acts[i].get("x")); y0 = float(acts[i].get("y"))
+                    x1 = float(acts[i+1].get("x")); y1 = float(acts[i+1].get("y"))
+                except (TypeError, ValueError):
+                    invalid_trip_coords += 1
+                    continue
+                _, idx_o = tree.query([[x0,y0]], k=1)
+                _, idx_d = tree.query([[x1,y1]], k=1)
+                dep = extract_departure_time(acts[i])
+                rows.append([
+                    float(idx_o[0,0]),
+                    float(idx_d[0,0]),
+                    float(dep),
+                    0.0,
+                    age,
+                    float(sex),
+                    float(employed),
+                    0.0,
+                    0.0,
+                ])
+                valid_trips += 1
+            if valid_trips>0:
+                selected_agents +=1
+                trips_per_agent.append(valid_trips)
+            else:
+                exclude["no_valid_trip"] +=1
+        
+        if rows:
+            self.agent_features = torch.tensor(rows, dtype=torch.float32, device=self.device)
+            self.agent_features[0, self.DEPARTURE_TIME] = 25*3600
+        else:
+            self.agent_features = torch.zeros((0, len(self)), dtype=torch.float32, device=self.device)
+        total_trips = len(rows)
+        info = "ℹ️"
+        print(f"{info} {selected_agents}/{total_agents} agents selected ({(100*selected_agents/total_agents if total_agents else 0):.2f}%)")
+        print(f"{info} Total trips: {total_trips}")
+        print(f"{info} Final agent_features shape: {tuple(self.agent_features.shape)}")
+        if verbose:
+            if trips_per_agent:
+                tpa = np.array(trips_per_agent)
+                hist, bins = np.histogram(tpa, bins=10)
+                print(f"{info} Trips per agent - min:{tpa.min()} max:{tpa.max()} mean:{tpa.mean():.2f} median:{np.median(tpa):.2f}")
+                print(f"{info} Trip histogram:")
+                for h,b0,b1 in zip(hist,bins[:-1],bins[1:]):
+                    print(f"  {b0:.1f}-{b1:.1f}: {h}")
+            print(f"{info} Exclusion reasons: {exclude}, invalid_trip_coords={invalid_trip_coords}")
+            dep_times = self.agent_features[:, self.DEPARTURE_TIME].cpu().numpy()
+            dep_times = dep_times[dep_times>0]
+            if dep_times.size:
+                q1,q2,q3 = np.quantile(dep_times,[0.25,0.5,0.75])
+                print(f"{info} Departure time stats (s) min:{dep_times.min()} q1:{q1} median:{q2} q3:{q3} max:{dep_times.max()}")
+            print(f"{info} First rows (origin, destination, dep_time):\n{self.agent_features[:3,[self.ORIGIN,self.DESTINATION,self.DEPARTURE_TIME]]}")
+            print(f"{info} Network: {len(nodes)} nodes, {len(links)} links, KDTree build {kd_time_ms:.2f} ms")
     def insert_agent_into_network(self, x: torch.Tensor, h: FeatureHelpers) -> None:
         """
         Insert agents as much as possible in the traffic network. The origin road is mentionned in agent feature. 

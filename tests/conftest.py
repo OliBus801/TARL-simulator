@@ -94,8 +94,8 @@ def simple_network_file(tmp_path):
         '  </links>'
         '</network>'
     )
-    file = tmp_path / "network.xml"
-    file.write_text(content)
+    file = tmp_path / "network"
+    (file.with_suffix(".xml")).write_text(content)
     return str(file)
 
 
