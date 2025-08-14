@@ -39,7 +39,7 @@ class Runner:
                 self.agent = Agents(self.device)
 
             self.simulator.load_network(scenario=self.args.scenario)
-            self.agent.load(os.path.join("save", self.args.scenario, "population.pt"))
+            self.agent.load(scenario=self.args.scenario)
             self.simulator.config_parameters(
                 timestep_size  = self.args.timestep_size,
                 start_time = self.args.start_end_time[0]
