@@ -170,7 +170,8 @@ class Agents(AgentFeatureHelpers):
         total_trips = len(rows) - 1
 
         # Logging
-        info = "ℹ️ | "
+        print("\n" + "="*10 + " 👥 Population Created" + "="*10)
+        info = "ℹ️  | "
         print(f"{info} {selected_agents}/{total_agents} agents selected ({(100*selected_agents/total_agents if total_agents else 0):.2f}%)")
         print(f"{info} Total trips: {total_trips}")
         print(f"{info} Final agent_features shape: {tuple(self.agent_features.shape)}")
