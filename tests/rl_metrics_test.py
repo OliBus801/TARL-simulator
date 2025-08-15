@@ -15,8 +15,8 @@ def test_rl_training_and_evaluation_collect_metrics(monkeypatch, simple_network_
     monkeypatch.setattr(Agents, "withdraw_agent_from_network", lambda self, x, h: x)
     monkeypatch.setattr(Agents, "insert_agent_into_network", lambda self, x, h: x)
 
-    env = SimulatorEnv(device="cpu", timestep_size=1, start_time=0, scenario="dummy")
-    eval_env = SimulatorEnv(device="cpu", timestep_size=1, start_time=0, scenario="dummy")
+    env = SimulatorEnv(device="cpu", timestep_size=1, start_time=0, scenario="Easy")
+    eval_env = SimulatorEnv(device="cpu", timestep_size=1, start_time=0, scenario="Easy")
 
     for e in (env, eval_env):
         e.simulator.agent.agent_features = torch.zeros((1, 9))

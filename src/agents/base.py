@@ -33,7 +33,7 @@ class Agents(AgentFeatureHelpers):
 
 
 
-    def config_agents_from_xml(self, scenario: str, *, verbose: bool = False) -> None:
+    def config_agents_from_xml(self, scenario: str, *, verbose: bool = True) -> None:
         """Parse MATSim population and network files to configure agents."""
         
         def extract_activities(plan_elem):
@@ -107,8 +107,10 @@ class Agents(AgentFeatureHelpers):
         t0 = time.time()
         tree = KDTree(link_positions)
         kd_time_ms = (time.time() - t0) * 1000
-        
-        rows = []
+
+        # Creating dummy agent
+        dummy_row = [0.0, 0.0, 25 * 3600, 0.0, 20.0, 0.0, 0.0, 0.0, 0.0]
+        rows = [dummy_row]
         trips_per_agent = []
         exclude = {"car_avail_not_always":0, "no_plan":0, "too_few_activities":0, "no_valid_trip":0}
         invalid_trip_coords = 0
@@ -164,32 +166,37 @@ class Agents(AgentFeatureHelpers):
             else:
                 exclude["no_valid_trip"] +=1
         
-        if rows:
-            self.agent_features = torch.tensor(rows, dtype=torch.float32, device=self.device)
-            self.agent_features[0, self.DEPARTURE_TIME] = 25*3600
-        else:
-            self.agent_features = torch.zeros((0, len(self)), dtype=torch.float32, device=self.device)
-        total_trips = len(rows)
-        info = "ℹ️"
+        self.agent_features = torch.tensor(rows, dtype=torch.float32, device=self.device)
+        total_trips = len(rows) - 1
+
+        # Logging
+        info = "ℹ️ | "
         print(f"{info} {selected_agents}/{total_agents} agents selected ({(100*selected_agents/total_agents if total_agents else 0):.2f}%)")
         print(f"{info} Total trips: {total_trips}")
         print(f"{info} Final agent_features shape: {tuple(self.agent_features.shape)}")
         if verbose:
             if trips_per_agent:
-                tpa = np.array(trips_per_agent)
-                hist, bins = np.histogram(tpa, bins=10)
-                print(f"{info} Trips per agent - min:{tpa.min()} max:{tpa.max()} mean:{tpa.mean():.2f} median:{np.median(tpa):.2f}")
-                print(f"{info} Trip histogram:")
-                for h,b0,b1 in zip(hist,bins[:-1],bins[1:]):
-                    print(f"  {b0:.1f}-{b1:.1f}: {h}")
+                trips_per_agent = np.array(trips_per_agent)
+                print(f"{info} Trips per agent - min:{trips_per_agent.min()} max:{trips_per_agent.max()} mean:{trips_per_agent.mean():.2f} median:{np.median(trips_per_agent):.2f}")
+
             print(f"{info} Exclusion reasons: {exclude}, invalid_trip_coords={invalid_trip_coords}")
-            dep_times = self.agent_features[:, self.DEPARTURE_TIME].cpu().numpy()
+            dep_times = self.agent_features[1:, self.DEPARTURE_TIME].cpu().numpy()
             dep_times = dep_times[dep_times>0]
             if dep_times.size:
-                q1,q2,q3 = np.quantile(dep_times,[0.25,0.5,0.75])
-                print(f"{info} Departure time stats (s) min:{dep_times.min()} q1:{q1} median:{q2} q3:{q3} max:{dep_times.max()}")
+                # Conversion secondes -> heures (0-23)
+                dep_hours = (dep_times // 3600).astype(int)
+
+                # Comptage par heure
+                counts = np.bincount(dep_hours, minlength=24)
+
+                # Impression formatée
+                print("📊 | Histogramme des départs (bins = 1h) (null counts ignored) :")
+                for h in range(24):
+                    if counts[h] >= 1:
+                        print(f"{h:02d}h : {counts[h]}")
             print(f"{info} First rows (origin, destination, dep_time):\n{self.agent_features[:3,[self.ORIGIN,self.DESTINATION,self.DEPARTURE_TIME]]}")
             print(f"{info} Network: {len(nodes)} nodes, {len(links)} links, KDTree build {kd_time_ms:.2f} ms")
+
     def insert_agent_into_network(self, x: torch.Tensor, h: FeatureHelpers) -> None:
         """
         Insert agents as much as possible in the traffic network. The origin road is mentionned in agent feature. 
@@ -203,11 +210,8 @@ class Agents(AgentFeatureHelpers):
             Index helpers to understand how columns works
         """
 
-        if torch.any(x[:, h.NUMBER_OF_AGENT] >= 198):
-            pass
-
         # Create a mask in order to select agent which can insert the network
-        mask = ((self.agent_features[:, self.DEPARTURE_TIME] < self.time) &       # Ensure that the time is good
+        mask = ((self.agent_features[:, self.DEPARTURE_TIME] <= self.time) &       # Ensure that the time is good
                 (self.agent_features[:, self.ON_WAY] == 0) &                      # Ensure that the agent is not already on the road
                 (self.agent_features[:, self.DONE] == 0))                         # Ensure that the agent is not already arrived
         road_index = self.agent_features[:, self.ORIGIN].to(torch.int64)
@@ -328,7 +332,7 @@ class Agents(AgentFeatureHelpers):
         """
         node_feature = graph.x.clone()                                # Clone the node_feature for mo
         adj = to_dense_adj(graph.edge_index)                          # Compute the adjency matrix
-        adj = (adj / adj.sum(dim = 1, keepdim=True)).squeeze(0)       # Normalise the adjency matrix
+        adj = (adj / adj.sum(dim = -1, keepdim=True)).squeeze(0)       # Normalise the adjency matrix
         index = torch.multinomial(adj, num_samples=1).squeeze(1)      # Draw the next moves
         node_feature[:, h.SELECTED_ROAD] = index.to(torch.float)      # Update the choice of user
         updated_graph = Data(x=node_feature, edge_index=graph.edge_index, edge_attr=graph.edge_attr)
