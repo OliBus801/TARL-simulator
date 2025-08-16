@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 import torch
-import os
 
 from .reinforcement_learning import SimulatorEnv
 from .transportation_simulator import TransportationSimulator
