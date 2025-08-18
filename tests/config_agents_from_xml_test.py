@@ -101,60 +101,50 @@ def _hhmm_to_seconds(hhmm: str) -> int:
 
 def _expected_trips_from_xml(pop_xml_path: Path):
     """
-    Trips attendus pour le graphe dual (links -> nodes, indices internes 0-based).
-    Mapping conforme à `config_network` :
-      - Les indices de noeuds du graphe = ordre d’énumération des <link> dans network.xml
-        (donc on reconstruit id_xml -> idx_interne par enumerate, et NON (id-1)).
-      - Origine  : origin_node = from(a_link), origin_road = lien avec from == origin_node (ici, a_link)
-      - Destination : dest_node = to(b_link), dest_road = lien avec to == dest_node
-    Retourne : [(origin_idx:int, dest_idx:int, dep_time:int)], trié par dep_time.
+    Calcule les trips attendus avec indices SRC/DEST des intersections.
+
+    - Les intersections sont énumérées dans l'ordre trié de leurs identifiants.
+    - Chaque intersection i est convertie en deux noeuds : SRC(i) et DEST(i)
+      avec les indices :
+        SRC(i)  = nb_links + 2*idx
+        DEST(i) = nb_links + 2*idx + 1
+    - Pour un trip (act a -> act b) :
+        origine = node 'from' du lien de l'acte a
+        destination = node 'to' du lien de l'acte b
+    Retourne : [(src_idx:int, dest_idx:int, dep_time:int)]
     """
-    # -- Charger le network --
     net_path = pop_xml_path.with_name("network.xml")
     net_root = ET.parse(net_path).getroot()
     links_el = net_root.find("links")
 
-    # id_xml -> index_interne (ordre du fichier), et tables from/to
-    id2idx = {}
     link_from = {}
     link_to = {}
-    incoming_by_to = {}    # node_to -> [link_id...]
-    for i, link in enumerate(links_el):
-        lid = int(link.attrib["id"])
-        f = int(link.attrib["from"])
-        t = int(link.attrib["to"])
-        id2idx[lid] = i
+    intersections = set()
+    for link in links_el:
+        lid = link.attrib["id"]
+        f = link.attrib["from"]
+        t = link.attrib["to"]
         link_from[lid] = f
         link_to[lid] = t
-        incoming_by_to.setdefault(t, []).append(lid)
+        intersections.update([f, t])
 
-    # -- Parser la population --
+    num_links = len(list(links_el))
+    intersection_indices = {
+        inter: (num_links + 2 * i, num_links + 2 * i + 1)
+        for i, inter in enumerate(sorted(intersections))
+    }
+
     root = ET.parse(pop_xml_path).getroot()
     trips = []
     for person in root.findall("person"):
         acts = person.findall("./plan/act")
         for a, b in zip(acts, acts[1:]):
-            a_link = int(a.attrib["link"])
-            b_link = int(b.attrib["link"])
-
-            # Règle duale
-            origin_node = link_from[a_link]    # nœud 'from' de l'acte de départ
-            dest_node   = link_to[b_link]      # nœud 'to'   de l'acte d'arrivée
-
-            # Origine : on prend le lien dont from == origin_node.
-            # Dans ton mini-réseau linéaire, c’est exactement a_link.
-            origin_road_link_id = a_link
-
-            # Destination : on prend un lien dont to == dest_node (unique ici).
-            cand = incoming_by_to.get(dest_node, [])
-            # Sélection déterministe (au cas où) : le plus petit id.
-            assert len(cand) >= 1, f"Aucun lien avec to == {dest_node} dans network.xml"
-            dest_road_link_id = min(cand)
-
-            # Convertir en indices internes via id2idx (conforme à config_network)
-            origin_idx = id2idx[origin_road_link_id]
-            dest_idx   = id2idx[dest_road_link_id]
-
+            a_link = a.attrib["link"]
+            b_link = b.attrib["link"]
+            origin_node = link_from[a_link]
+            dest_node = link_to[b_link]
+            origin_idx = intersection_indices[origin_node][0]
+            dest_idx = intersection_indices[dest_node][1]
             dep_time = _hhmm_to_seconds(a.attrib["end_time"])
             trips.append((origin_idx, dest_idx, dep_time))
 

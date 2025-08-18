@@ -54,8 +54,8 @@ class AgentFeatureHelpers:
     """ A class to help with agent feature indexing """
 
     def __init__(self):
-        self.ORIGIN = 0                     # Contains the index of the origin road 
-        self.DESTINATION = 1                # Contains the index of the destination road
+        self.ORIGIN = 0                     # Contains the SRC(i) node index of the origin intersection
+        self.DESTINATION = 1                # Contains the DEST(j) node index of the destination intersection
         self.DEPARTURE_TIME = 2             # Contains the index of departure time
         self.ARRIVAL_TIME = 3               # Contains the arrival time in the scenario
         self.AGE = 4                        # Contains the age of the agent
