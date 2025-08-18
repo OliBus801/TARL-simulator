@@ -4,7 +4,6 @@ import torch
 import os
 from torch_geometric.utils import to_dense_adj, to_networkx
 from torch_geometric.data import Data
-from sklearn.neighbors import KDTree
 from datetime import datetime
 import networkx as nx
 from src.feature_helpers import AgentFeatureHelpers, FeatureHelpers
@@ -121,11 +120,6 @@ class Agents(AgentFeatureHelpers):
             src_idx = num_links + 2 * idx
             intersection_indices[inter] = (src_idx, src_idx + 1)
 
-        import time
-        t0 = time.time()
-        tree = KDTree(link_positions)
-        kd_time_ms = (time.time() - t0) * 1000
-
         # Creating dummy agent
         dummy_row = [0.0, 0.0, 25 * 3600, 0.0, 20.0, 0.0, 0.0, 0.0, 0.0]
         rows = [dummy_row]
@@ -157,21 +151,15 @@ class Agents(AgentFeatureHelpers):
             age = float(attrs.get("age", 0))
             valid_trips = 0
             for i in range(len(acts) - 1):
-                link_o = acts[i].get("link")
-                link_d = acts[i + 1].get("link")
+                origin_node = acts[i].get("link")
+                dest_node = acts[i + 1].get("link")
                 try:
-                    if link_o in link_from_id and link_d in link_to_id:
-                        start_inter = link_from_id[link_o]
-                        dest_inter = link_to_id[link_d]
+                    if origin_node in intersection_indices and dest_node in intersection_indices:
+                        src_idx = intersection_indices[origin_node][0]
+                        dest_idx = intersection_indices[dest_node][1]
                     else:
-                        x0 = float(acts[i].get("x")); y0 = float(acts[i].get("y"))
-                        x1 = float(acts[i+1].get("x")); y1 = float(acts[i+1].get("y"))
-                        _, idx_o = tree.query([[x0, y0]], k=1)
-                        _, idx_d = tree.query([[x1, y1]], k=1)
-                        start_inter = link_from_list[int(idx_o[0, 0])]
-                        dest_inter = link_to_list[int(idx_d[0, 0])]
-                    src_idx = intersection_indices[start_inter][0]
-                    dest_idx = intersection_indices[dest_inter][1]
+                        print(f"Could not create plan for person {person.get('id')}: Invalid trip : {origin_node} -> {dest_node}")
+                        continue
                 except (TypeError, ValueError, KeyError):
                     invalid_trip_coords += 1
                     continue
@@ -225,7 +213,7 @@ class Agents(AgentFeatureHelpers):
                     if counts[h] >= 1:
                         print(f"{h:02d}h : {counts[h]}")
             print(f"{info} First rows (origin, destination, dep_time):\n{self.agent_features[:3,[self.ORIGIN,self.DESTINATION,self.DEPARTURE_TIME]]}")
-            print(f"{info} Network: {len(nodes)} nodes, {len(links)} links, KDTree build {kd_time_ms:.2f} ms")
+            print(f"{info} Network: {len(nodes)} nodes, {len(links)} links")
 
     def insert_agent_into_network(self, x: torch.Tensor, h: FeatureHelpers) -> None:
         """

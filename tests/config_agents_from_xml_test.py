@@ -32,7 +32,6 @@ def tmp_scenario_dir(tmp_path):
     Note:
       The XML content is hardcoded and intended for demonstration or testing only.
     """
-    """Construit un scénario minimal avec population.xml et network.xml dans un dossier tmp."""
     scen = tmp_path / "scenario"
     scen.mkdir(parents=True, exist_ok=True)
 
@@ -101,17 +100,17 @@ def _hhmm_to_seconds(hhmm: str) -> int:
 
 def _expected_trips_from_xml(pop_xml_path: Path):
     """
-    Calcule les trips attendus avec indices SRC/DEST des intersections.
+    Computes the expected trips with SRC/DEST intersection indices.
 
-    - Les intersections sont énumérées dans l'ordre trié de leurs identifiants.
-    - Chaque intersection i est convertie en deux noeuds : SRC(i) et DEST(i)
-      avec les indices :
-        SRC(i)  = nb_links + 2*idx
-        DEST(i) = nb_links + 2*idx + 1
-    - Pour un trip (act a -> act b) :
-        origine = node 'from' du lien de l'acte a
-        destination = node 'to' du lien de l'acte b
-    Retourne : [(src_idx:int, dest_idx:int, dep_time:int)]
+    - Intersections are enumerated in the sorted order of their identifiers.
+    - Each intersection i is converted into two nodes: SRC(i) and DEST(i)
+      with indices:
+      SRC(i)  = num_links + 2*idx
+      DEST(i) = num_links + 2*idx + 1
+    - For a trip (act a -> act b):
+      origin = 'from' node of the link of act a
+      destination = 'to' node of the link of act b
+    Returns: [(src_idx:int, dest_idx:int, dep_time:int)]
     """
     net_path = pop_xml_path.with_name("network.xml")
     net_root = ET.parse(net_path).getroot()
@@ -139,14 +138,13 @@ def _expected_trips_from_xml(pop_xml_path: Path):
     for person in root.findall("person"):
         acts = person.findall("./plan/act")
         for a, b in zip(acts, acts[1:]):
-            a_link = a.attrib["link"]
-            b_link = b.attrib["link"]
-            origin_node = link_from[a_link]
-            dest_node = link_to[b_link]
+            origin_node = a.attrib["link"]
+            dest_node = b.attrib["link"]
             origin_idx = intersection_indices[origin_node][0]
             dest_idx = intersection_indices[dest_node][1]
             dep_time = _hhmm_to_seconds(a.attrib["end_time"])
             trips.append((origin_idx, dest_idx, dep_time))
+    
 
     return trips
 
@@ -157,50 +155,46 @@ def _expected_trips_from_xml(pop_xml_path: Path):
 
 def test_config_agents_from_xml_basic(tmp_scenario_dir):
     """
-    Vérifie:
-    - présence d’un dummy (ligne 0) avec caractéristique distinctive,
-    - nombre total de trips (dummy + trips XML),
-    - tri temporel des départs,
-    - (ORIGIN, DESTINATION, DEP_TIME) identiques au XML (mapping identité),
-    - attributs par défaut (AGE/SEX/EMPLOYMENT_STATUS),
-    - aucune entrée “trip” avec DEP_TIME nul.
+    Checks:
+    - presence of a dummy (row 0) with a distinctive feature,
+    - total number of trips (dummy + XML trips),
+    - temporal sorting of departures,
+    - (ORIGIN, DESTINATION, DEP_TIME) identical to XML (identity mapping),
+    - default attributes (AGE/SEX/EMPLOYMENT_STATUS),
+    - no “trip” entry with zero DEP_TIME.
     """
     agent = Agents(device="cpu")
 
-    # Si ta fonction prend un chemin de scénario direct :
     agent.config_agents_from_xml(str(tmp_scenario_dir))
-    # Si elle prend un identifiant et cherche dans un root, adapte ici.
 
     feats = agent.agent_features
-    h = agent  # raccourci pour indices
+    h = agent
 
     assert isinstance(feats, torch.Tensor)
     assert feats.ndim == 2 and feats.size(1) >= len(agent)
 
     # --- dummy ---
-    # Règle souple : départ très grand OU flags neutres/terminés, selon ton implémentation
     assert feats[0, h.DEPARTURE_TIME] >= 25 * 3600 or feats[0, h.DONE] == 1 or feats[0, h.ON_WAY] == 0
 
-    # --- nombre de trips ---
+    # --- Number of trips ---
     expected = _expected_trips_from_xml(tmp_scenario_dir / "population.xml")
     print(expected)
-    assert feats.shape[0] == len(expected) + 1, f"Attendu {len(expected)} trips + 1 dummy, obtenu {feats.shape[0]} lignes"
-    
-    real_agents = feats[1:]  # on ignore le dummy
+    assert feats.shape[0] == len(expected) + 1, f"Expected {len(expected)} trips + 1 dummy, got {feats.shape[0]} rows"
 
-    """
-    # --- correspondance exacte ---
+    real_agents = feats[1:]  # ignore dummy
 
-    got = [(int(real[i, h.ORIGIN].item()),
-            int(real[i, h.DESTINATION].item()),
-            int(real[i, h.DEPARTURE_TIME].item()))
-           for i in range(real.shape[0])]
-    assert got == expected, f"\nAttendu (ORIGIN, DEST, DEP): {expected}\nObtenu: {got}"
-    """
-    # --- attributs par défaut ---
+    # --- exact correspondence ---
+
+    got = [(int(real_agents[i, h.ORIGIN].item()),
+            int(real_agents[i, h.DESTINATION].item()),
+            int(real_agents[i, h.DEPARTURE_TIME].item()))
+           for i in range(real_agents.shape[0])]
+    assert got == expected, f"\nExpected (ORIGIN, DEST, DEP): {expected}\nGot: {got}"
+
+    # --- default attributes ---
     assert torch.all(real_agents[:, h.SEX] == 0)
     assert torch.all(real_agents[:, h.EMPLOYMENT_STATUS] == 0)
     assert torch.all(real_agents[:, h.AGE] == 20)
 
-    # --- pas de DEP_TIME nul ---
+    # --- no zero DEP_TIME ---
     assert (real_agents[:, h.DEPARTURE_TIME] == 0).sum().item() == 0
