@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 import torch
-import os
 
 from .reinforcement_learning import SimulatorEnv
 from .transportation_simulator import TransportationSimulator
@@ -44,6 +43,7 @@ class Runner:
                 timestep_size  = self.args.timestep_size,
                 start_time = self.args.start_end_time[0]
             )
+            self.agent.set_time(self.args.start_end_time[0])
 
         elif self.args.algo in {"mpnn", "mpnn+ppo"}:
             from .agents.mpnn_agent import MPNNPolicyNet, MPNNValueNetSimple

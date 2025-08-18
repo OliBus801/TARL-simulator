@@ -1,5 +1,37 @@
 class FeatureHelpers:
-    """ A class to help with feature indexing and manipulation for MPNN models. """
+    """
+    A class to help with feature indexing and manipulation for MPNN models.
+
+    Features:
+        AGENT_POSITION: slice(0, Nmax)
+            - The FIFO queue. Contains the IDs of agents.
+        AGENT_TIME_ARRIVAL: slice(Nmax, 2 * Nmax)
+            - The arrival times of agents in the FIFO queue.
+        AGENT_POSITION_AT_ARRIVAL: slice(2 * Nmax, 3 * Nmax)
+            - The positions of agents at their arrival.
+        MAX_NUMBER_OF_AGENT: 3 * Nmax
+            - The size of the FIFO queue.
+        NUMBER_OF_AGENT: 3 * Nmax + 1
+            - The current number of agents on the road.
+        FREE_FLOW_TIME_TRAVEL: 3 * Nmax + 2
+            - The free flow travel time on that road.
+        LENGHT_OF_ROAD: 3 * Nmax + 3
+            - The length of the road.
+        MAX_FLOW: 3 * Nmax + 4
+            - The maximum flow capacity of the road.
+        SELECTED_ROAD: 3 * Nmax + 5
+            - The index of the selected road. (?)
+        ROAD_INDEX: 3 * Nmax + 6
+            - The index of the road.
+        HEAD_FIFO: 0
+            - The ID of the agent at the head of the FIFO queue.
+        HEAD_FIFO_TIME: Nmax
+            - The time at the head of the FIFO queue. (?)
+        HEAD_FIFO_CONG: 2*Nmax
+            - The congestion value at the head of the FIFO queue. (?)
+        CONGESTION_FILE: 3
+            - A constant that determines the congestion buffer size reserved only to resolve gridlock situations.
+    """
 
     def __init__(self, Nmax=100):
         self.Nmax = Nmax
