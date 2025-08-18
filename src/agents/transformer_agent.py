@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 from torch._C import _functorch as fc
 from torch_geometric.utils import to_scipy_sparse_matrix, degree
 from torch_geometric.data import Data
@@ -21,7 +22,7 @@ class MLAgents(Agents, nn.Module):
     This class is used to predict the next road to take for each agent using a machine learning model.
     """
 
-    def __init__(self, edge_index, num_nodes, device):
+    def __init__(self, edge_index, num_nodes, device, edge_index_routes=None, num_roads=None):
         Agents.__init__(self, device = device)
         nn.Module.__init__(self)
         
@@ -39,7 +40,20 @@ class MLAgents(Agents, nn.Module):
         self.value_head = torch.nn.Linear(16, 1)
         self.positional_embedding = None
         self.edge_index = edge_index
-        self.compute_encodings(edge_index=edge_index, num_nodes=num_nodes, positional_dim=16)
+
+        # By default, compute positional encodings on the full graph.
+        if edge_index_routes is None:
+            edge_index_routes = edge_index
+        if num_roads is None:
+            num_roads = num_nodes
+
+        # Compute encodings only on road nodes and pad zeros for SRC/DEST nodes
+        self.compute_encodings(
+            edge_index=edge_index_routes,
+            num_nodes=num_roads,
+            positional_dim=16,
+            total_num_nodes=num_nodes,
+        )
 
     def forward(self, node_features, edge_features, agent_index):
         """
@@ -136,7 +150,13 @@ class MLAgents(Agents, nn.Module):
         self.to(self.device)
         self.eval()
 
-    def compute_encodings(self, edge_index: torch.Tensor,num_nodes: int, positional_dim: int) -> torch.Tensor:
+    def compute_encodings(
+        self,
+        edge_index: torch.Tensor,
+        num_nodes: int,
+        positional_dim: int,
+        total_num_nodes: Optional[int] = None,
+    ) -> torch.Tensor:
         """
         Compute the positional embedding for the input tensor and store it in the class.
 
@@ -149,12 +169,12 @@ class MLAgents(Agents, nn.Module):
             The number of eigenvalues to compute for the positional encoding.
         """
         A = to_scipy_sparse_matrix(edge_index, edge_attr=None, num_nodes=num_nodes)
-        A = (A+A.T)/2
+        A = (A + A.T) / 2
         L = csgraph.laplacian(A, normed=True)
         eigvals, eigvecs = eigsh(L, k=positional_dim + 5, which='SM')
 
         # Remove the trivial eigenvalue and eigenvector
-        tol = 1e-5 
+        tol = 1e-5
         nontrivial_mask = eigvals > tol
         eigvals = eigvals[nontrivial_mask]
         eigvecs = eigvecs[:, nontrivial_mask]
@@ -165,9 +185,19 @@ class MLAgents(Agents, nn.Module):
         eigvecs = torch.Tensor(eigvecs)
         eigvecs = eigvecs / torch.norm(eigvecs, dim=0, keepdim=True)
 
-        # Save the positional embedding
-        self.positional_embedding = eigvecs
-        self.structural_embedding = degree(edge_index[0], num_nodes=num_nodes, dtype=torch.float32).unsqueeze(1)
+        rwse = degree(edge_index[0], num_nodes=num_nodes, dtype=torch.float32).unsqueeze(1)
+
+        # Pad embeddings with zeros for non-road nodes if needed
+        if total_num_nodes is not None and total_num_nodes > num_nodes:
+            pe = torch.zeros((total_num_nodes, positional_dim), dtype=eigvecs.dtype)
+            pe[:num_nodes] = eigvecs
+            rw = torch.zeros((total_num_nodes, 1), dtype=rwse.dtype)
+            rw[:num_nodes] = rwse
+            self.positional_embedding = pe
+            self.structural_embedding = rw
+        else:
+            self.positional_embedding = eigvecs
+            self.structural_embedding = rwse
 
     def choice(self, graph: Data, h: FeatureHelpers):
         """
