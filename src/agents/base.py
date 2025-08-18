@@ -97,12 +97,30 @@ class Agents(AgentFeatureHelpers):
             raise ValueError("The XML file does not contain a 'links' element.")
         
         node_positions = {node.get("id"): (float(node.get("x")), float(node.get("y"))) for node in nodes}
-        link_positions = np.zeros((len(links), 2))
+        num_links = len(links)
+        link_positions = np.zeros((num_links, 2))
+        link_from_id = {}
+        link_to_id = {}
+        link_from_list = []
+        link_to_list = []
+        intersections = set()
         for i, link in enumerate(links):
             a, b = link.get("from"), link.get("to")
             link_positions[i, 0] = (node_positions[a][0] + node_positions[b][0]) / 2
             link_positions[i, 1] = (node_positions[a][1] + node_positions[b][1]) / 2
-        
+            lid = link.get("id")
+            link_from_id[lid] = a
+            link_to_id[lid] = b
+            link_from_list.append(a)
+            link_to_list.append(b)
+            intersections.update([a, b])
+
+        # Map intersections -> (SRC, DEST) indices as created in config_network
+        intersection_indices = {}
+        for idx, inter in enumerate(sorted(intersections)):
+            src_idx = num_links + 2 * idx
+            intersection_indices[inter] = (src_idx, src_idx + 1)
+
         import time
         t0 = time.time()
         tree = KDTree(link_positions)
@@ -138,19 +156,30 @@ class Agents(AgentFeatureHelpers):
             employed = 1 if attrs.get("employed", "no").lower() == "yes" else 0
             age = float(attrs.get("age", 0))
             valid_trips = 0
-            for i in range(len(acts)-1):
+            for i in range(len(acts) - 1):
+                link_o = acts[i].get("link")
+                link_d = acts[i + 1].get("link")
                 try:
-                    x0 = float(acts[i].get("x")); y0 = float(acts[i].get("y"))
-                    x1 = float(acts[i+1].get("x")); y1 = float(acts[i+1].get("y"))
-                except (TypeError, ValueError):
+                    if link_o in link_from_id and link_d in link_to_id:
+                        start_inter = link_from_id[link_o]
+                        dest_inter = link_to_id[link_d]
+                    else:
+                        x0 = float(acts[i].get("x")); y0 = float(acts[i].get("y"))
+                        x1 = float(acts[i+1].get("x")); y1 = float(acts[i+1].get("y"))
+                        _, idx_o = tree.query([[x0, y0]], k=1)
+                        _, idx_d = tree.query([[x1, y1]], k=1)
+                        start_inter = link_from_list[int(idx_o[0, 0])]
+                        dest_inter = link_to_list[int(idx_d[0, 0])]
+                    src_idx = intersection_indices[start_inter][0]
+                    dest_idx = intersection_indices[dest_inter][1]
+                except (TypeError, ValueError, KeyError):
                     invalid_trip_coords += 1
                     continue
-                _, idx_o = tree.query([[x0,y0]], k=1)
-                _, idx_d = tree.query([[x1,y1]], k=1)
+
                 dep = extract_departure_time(acts[i])
                 rows.append([
-                    float(idx_o[0,0]),
-                    float(idx_d[0,0]),
+                    float(src_idx),
+                    float(dest_idx),
                     float(dep),
                     0.0,
                     age,
