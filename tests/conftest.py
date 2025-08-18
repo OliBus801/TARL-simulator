@@ -112,7 +112,7 @@ def simulator(device, simple_network_file):
     sim.config_network(simple_network_file)
     sim.agent.agent_features = torch.zeros((1, 9))
     sim.agent.agent_features[0, 0] = 2  # origin SRC node
-    sim.agent.agent_features[0, 1] = 0  # destination road
+    sim.agent.agent_features[0, 1] = 5  # destination DEST node
     sim.agent.agent_features[0, 2] = 0  # departure time
     sim.config_parameters(start_time=1)
     sim.agent.set_time(sim.time)

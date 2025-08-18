@@ -280,7 +280,9 @@ class TransportationSimulator:
 
         # Withdraw agents
         b = e
-        self.graph.x = self.agent.withdraw_agent_from_network(self.graph.x, h)
+        self.graph.x = self.agent.withdraw_agent_from_network(
+            self.graph.x, self.graph.edge_index, h
+        )
         e = time.time()
         self.withdraw_time += e-b
 

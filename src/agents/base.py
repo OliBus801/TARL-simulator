@@ -265,36 +265,51 @@ class Agents(AgentFeatureHelpers):
         return x
 
 
-    def withdraw_agent_from_network(self, x: torch.Tensor, h: FeatureHelpers) -> None:
+    def withdraw_agent_from_network(
+        self, x: torch.Tensor, edge_index: torch.Tensor, h: FeatureHelpers
+    ) -> torch.Tensor:
         """
-        Withdraws all agents in the front of queue of every road in the traffic network. 
+        Withdraw all agents at the head of the queue that have reached their destination.
 
         Parameters
         ----------
         x : torch.Tensor
-            A tensor which contains the node features of the network, and which is update 
-            at the end of function.
+            Node feature tensor of the road network. This tensor is updated and
+            returned.
+        edge_index : torch.Tensor
+            Graph connectivity of the network in COO format.
         h : FeatureHelpers
-            Index helpers to understand how columns works
+            Index helpers to understand how columns work.
         """
-        
-        # Mask agent that have to get out
+
         x_update = x.clone()
-        candidate_agent = x_update[:, h.HEAD_FIFO].to(torch.int64)
-        mask = ((self.agent_features[candidate_agent, self.DESTINATION] == x_update[:, h.ROAD_INDEX]) & 
-                (x_update[:, h.NUMBER_OF_AGENT] != 0))
-        # Withdraw these agents from the network
-        x_update[mask, : h.MAX_NUMBER_OF_AGENT - 1] = x_update[mask, 1 : h.MAX_NUMBER_OF_AGENT]
-        x_update[mask, h.NUMBER_OF_AGENT] -= 1
-        self.agent_features[candidate_agent[mask], self.DONE] = 1
-        self.agent_features[candidate_agent[mask], self.ON_WAY] = 0
-        self.agent_features[candidate_agent[mask], self.ARRIVAL_TIME] = self.time
-        mask = ((self.agent_features[candidate_agent, self.DESTINATION] == x_update[:, h.ROAD_INDEX]) &
-                (x_update[:, h.NUMBER_OF_AGENT] != 0))
-        if torch.any(mask):
-            return self.withdraw_agent_from_network(x_update, h)
-        else:
-            return x_update
+        # Pre-compute adjacency matrix to check connectivity to destinations
+        adj = to_dense_adj(edge_index, max_num_nodes=x.size(0)).squeeze(0).to(x.device)
+
+        while True:
+            candidate_agent = x_update[:, h.HEAD_FIFO].to(torch.long)
+            roads = x_update[:, h.ROAD_INDEX].to(torch.long)
+            dest = self.agent_features[candidate_agent, self.DESTINATION].to(torch.long)
+
+            # Check if an edge exists from each road to the candidate's destination
+            connectivity = adj[roads, dest] > 0
+            mask = connectivity & (x_update[:, h.NUMBER_OF_AGENT] != 0)
+
+            if not torch.any(mask):
+                break
+
+            agents_to_withdraw = candidate_agent[mask]
+
+            # Withdraw these agents from the network
+            x_update[mask, : h.MAX_NUMBER_OF_AGENT - 1] = x_update[mask, 1 : h.MAX_NUMBER_OF_AGENT]
+            x_update[mask, h.NUMBER_OF_AGENT] -= 1
+
+            # Update agent features for withdrawn agents
+            self.agent_features[agents_to_withdraw, self.DONE] = 1
+            self.agent_features[agents_to_withdraw, self.ON_WAY] = 0
+            self.agent_features[agents_to_withdraw, self.ARRIVAL_TIME] = self.time
+
+        return x_update
 
 
     def save(self, file_path: str) -> None:
