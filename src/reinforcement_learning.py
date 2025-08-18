@@ -240,7 +240,7 @@ class SimulatorEnv(EnvBase):
 
         # Insert agents
         b = e
-        self.simulator.graph.x = self.simulator.agent.insert_agent_into_network(self.simulator.graph.x, h)
+        self.simulator.graph.x = self.simulator.agent.insert_agent_into_network(self.simulator.graph, h)
         e = time.time()
         self.simulator.inserting_time += e - b
 

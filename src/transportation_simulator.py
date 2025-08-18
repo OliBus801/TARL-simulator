@@ -274,7 +274,7 @@ class TransportationSimulator:
         
         # Insert first agent in the network
         b = time.time()
-        self.graph.x = self.agent.insert_agent_into_network(self.graph.x, h)
+        self.graph.x = self.agent.insert_agent_into_network(self.graph, h)
         e = time.time()
         self.inserting_time += e-b
 

@@ -215,59 +215,54 @@ class Agents(AgentFeatureHelpers):
             print(f"{info} First rows (origin, destination, dep_time):\n{self.agent_features[:3,[self.ORIGIN,self.DESTINATION,self.DEPARTURE_TIME]]}")
             print(f"{info} Network: {len(nodes)} nodes, {len(links)} links")
 
-    def insert_agent_into_network(self, x: torch.Tensor, h: FeatureHelpers) -> None:
-        """
-        Insert agents as much as possible in the traffic network. The origin road is mentionned in agent feature. 
+    def insert_agent_into_network(self, graph: Data, h: FeatureHelpers) -> torch.Tensor:
+        """Insert all agents that are ready to depart into the traffic network."""
 
-        Parameters
-        ----------
-        x : torch.Tensor
-            A tensor which contains the node features of the network, and which is update 
-            at the end of function.
-        h : FeatureHelpers
-            Index helpers to understand how columns works
-        """
-
-        # Create a mask in order to select agent which can insert the network
-        mask = ((self.agent_features[:, self.DEPARTURE_TIME] <= self.time) &       # Ensure that the time is good
-                (self.agent_features[:, self.ON_WAY] == 0) &                      # Ensure that the agent is not already on the road
-                (self.agent_features[:, self.DONE] == 0))                         # Ensure that the agent is not already arrived
-        road_index = self.agent_features[:, self.ORIGIN].to(torch.int64)
-        mask = mask & (x[road_index, h.NUMBER_OF_AGENT] < x[road_index, h.MAX_NUMBER_OF_AGENT] - h.CONGESTION_FILE)
-            
-
-        # Need to select only one person to insert per road
-        agent = self.agent_features[mask]                     # agent stores the tensor of agent features to insert
-        if not torch.any(mask):  # No agent to insert
+        x = graph.x
+        ready = (
+            (self.agent_features[:, self.DEPARTURE_TIME] <= self.time)
+            & (self.agent_features[:, self.ON_WAY] == 0)
+            & (self.agent_features[:, self.DONE] == 0)
+        )
+        if not torch.any(ready):
             return x
-        agent_index = torch.nonzero(mask).squeeze(0)
-        road = agent[:, self.ORIGIN]
-        nb_waiting_agent = agent_index.size(0)
-        road_sorted, index_road_sorted = torch.sort(road)
-        mask = torch.zeros_like(road, dtype=torch.bool)
-        mask[0] = True
-        mask[1:] = road_sorted[:-1] !=  road_sorted[1:]
-        selected_index = index_road_sorted[mask]
-        road = road[selected_index]
-        agent = agent[selected_index]
-        agent_index = agent_index[selected_index].flatten()
-        nb_waiting_agent -= selected_index.size(0)
 
-        # Insert all these agents
-        road_select = agent[:, self.ORIGIN].to(torch.int64)
-        end_queue = (x[road_select, h.NUMBER_OF_AGENT]).to(torch.int64) 
-        x[road_select, end_queue] = agent_index.to(torch.float)                   # Queue for agent index
-        x[road_select, h.Nmax + end_queue] = self.time                            # Queue for time arrival
-        x[road_select, 2*h.Nmax + end_queue] = x[road_select, h.NUMBER_OF_AGENT]  # Queue for number of agent in queue
-        x[road_select, h.NUMBER_OF_AGENT] += 1
-        # Update the agent features
-        self.agent_features[agent_index, self.ON_WAY] = 1.0
+        graph = self.choice(graph, h)
+        x = graph.x
 
-        # Insert the others agent
-        if nb_waiting_agent > 0:
-            return self.insert_agent_into_network(x, h)
-        else:
+        origins = self.agent_features[ready, self.ORIGIN].to(torch.long)
+        road_idx = x[origins, h.SELECTED_ROAD].to(torch.long)
+
+        capacity_ok = (
+            x[road_idx, h.NUMBER_OF_AGENT]
+            < x[road_idx, h.MAX_NUMBER_OF_AGENT] - h.CONGESTION_FILE
+        )
+        if not torch.any(capacity_ok):
             return x
+
+        agent_idx = torch.nonzero(ready, as_tuple=False).squeeze(1)[capacity_ok]
+        road_idx = road_idx[capacity_ok]
+
+        order = torch.argsort(road_idx)
+        road_sorted = road_idx[order]
+        agent_sorted = agent_idx[order]
+        start_counts = x[road_sorted, h.NUMBER_OF_AGENT].to(torch.long)
+        unique_roads, counts = torch.unique_consecutive(road_sorted, return_counts=True)
+        offsets = torch.arange(road_sorted.size(0), device=x.device) - torch.repeat_interleave(
+            torch.cat([torch.tensor([0], device=x.device), counts.cumsum(0)[:-1]], dim=0),
+            counts,
+        )
+        positions = start_counts + offsets
+
+        x[road_sorted, h.AGENT_POSITION.start + positions] = agent_sorted.to(torch.float)
+        x[road_sorted, h.AGENT_TIME_ARRIVAL.start + positions] = float(self.time)
+        x[road_sorted, h.AGENT_POSITION_AT_ARRIVAL.start + positions] = start_counts.to(x.dtype)
+
+        x[unique_roads, h.NUMBER_OF_AGENT] += counts.to(x.dtype)
+        self.agent_features[agent_sorted, self.ON_WAY] = 1.0
+
+        graph.x = x
+        return x
 
 
     def withdraw_agent_from_network(self, x: torch.Tensor, h: FeatureHelpers) -> None:
@@ -343,17 +338,45 @@ class Agents(AgentFeatureHelpers):
 
     def choice(self, graph: Data, h: FeatureHelpers):
         """
-        Chose the next direction to take for each agent
+        Chose the next direction to take for each agent.
+
+        This samples a downstream road for every node that has outgoing
+        connections. Roads without outgoing connections (e.g. those leading
+        directly to a destination) and DEST nodes are ignored.
 
         Parameters
         ----------
         """
-        node_feature = graph.x.clone()  # Clone the node_feature for modification
+        node_feature = graph.x.clone()
         num_roads = graph.num_roads
-        adj = to_dense_adj(graph.edge_index_routes, max_num_nodes=num_roads).squeeze(0)
-        adj = adj / adj.sum(dim=-1, keepdim=True)
-        index = torch.multinomial(adj, num_samples=1).squeeze(1)
-        node_feature[:num_roads, h.SELECTED_ROAD] = index.to(torch.float)
+
+        # --- Sample for road nodes -------------------------------------------------
+        adj_routes = to_dense_adj(
+            graph.edge_index_routes, max_num_nodes=num_roads
+        ).squeeze(0)
+        out_routes = adj_routes.sum(dim=-1)
+        mask_routes = out_routes > 0
+        if mask_routes.any():
+            adj_norm = adj_routes[mask_routes] / out_routes[mask_routes].unsqueeze(-1)
+            index = torch.multinomial(adj_norm, num_samples=1).squeeze(1)
+            road_idx = torch.arange(num_roads, device=node_feature.device)[mask_routes]
+            node_feature[road_idx, h.SELECTED_ROAD] = index.to(torch.float)
+
+        # --- Sample for SRC nodes --------------------------------------------------
+        total_nodes = node_feature.size(0)
+        adj_full = to_dense_adj(
+            graph.edge_index, max_num_nodes=total_nodes
+        ).squeeze(0)
+        out_full = adj_full.sum(dim=-1)
+        src_mask = (torch.arange(total_nodes, device=node_feature.device) >= num_roads) & (
+            out_full > 0
+        )
+        if src_mask.any():
+            adj_src = adj_full[src_mask]
+            adj_src = adj_src / adj_src.sum(dim=-1, keepdim=True)
+            index = torch.multinomial(adj_src, num_samples=1).squeeze(1)
+            node_feature[src_mask, h.SELECTED_ROAD] = index.to(torch.float)
+
         updated_graph = Data(
             x=node_feature,
             edge_index=graph.edge_index,

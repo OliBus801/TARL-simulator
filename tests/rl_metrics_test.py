@@ -13,7 +13,7 @@ def test_rl_training_and_evaluation_collect_metrics(monkeypatch, simple_network_
     # Simplify agent operations
     monkeypatch.setattr(Agents, "reset", lambda self: None)
     monkeypatch.setattr(Agents, "withdraw_agent_from_network", lambda self, x, h: x)
-    monkeypatch.setattr(Agents, "insert_agent_into_network", lambda self, x, h: x)
+    monkeypatch.setattr(Agents, "insert_agent_into_network", lambda self, g, h: g.x)
 
     env = SimulatorEnv(device="cpu", timestep_size=1, start_time=0, scenario="Easy")
     eval_env = SimulatorEnv(device="cpu", timestep_size=1, start_time=0, scenario="Easy")
