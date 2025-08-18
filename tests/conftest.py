@@ -81,7 +81,14 @@ def braess_graph():
     ], dtype=torch.long)
     edge_attr = torch.rand(edge_index.size(1), 1)
 
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    return Data(
+        x=x,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        edge_index_routes=edge_index,
+        edge_attr_routes=edge_attr,
+        num_roads=x.size(0),
+    )
 
 
 @pytest.fixture

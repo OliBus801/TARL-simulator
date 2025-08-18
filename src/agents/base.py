@@ -331,12 +331,20 @@ class Agents(AgentFeatureHelpers):
         Parameters
         ----------
         """
-        node_feature = graph.x.clone()                                # Clone the node_feature for mo
-        adj = to_dense_adj(graph.edge_index)                          # Compute the adjency matrix
-        adj = (adj / adj.sum(dim = -1, keepdim=True)).squeeze(0)       # Normalise the adjency matrix
-        index = torch.multinomial(adj, num_samples=1).squeeze(1)      # Draw the next moves
-        node_feature[:, h.SELECTED_ROAD] = index.to(torch.float)      # Update the choice of user
-        updated_graph = Data(x=node_feature, edge_index=graph.edge_index, edge_attr=graph.edge_attr)
+        node_feature = graph.x.clone()  # Clone the node_feature for modification
+        num_roads = graph.num_roads
+        adj = to_dense_adj(graph.edge_index_routes, max_num_nodes=num_roads).squeeze(0)
+        adj = adj / adj.sum(dim=-1, keepdim=True)
+        index = torch.multinomial(adj, num_samples=1).squeeze(1)
+        node_feature[:num_roads, h.SELECTED_ROAD] = index.to(torch.float)
+        updated_graph = Data(
+            x=node_feature,
+            edge_index=graph.edge_index,
+            edge_attr=graph.edge_attr,
+            edge_index_routes=graph.edge_index_routes,
+            edge_attr_routes=graph.edge_attr_routes,
+            num_roads=num_roads,
+        )
         return updated_graph
     
     def reset(self):

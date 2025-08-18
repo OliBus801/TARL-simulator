@@ -98,12 +98,21 @@ class TransportationSimulator:
             effective_cell_size = float(links.get("effectivecellsize"))
         except:
             effective_cell_size = 7.5
-        h = FeatureHelpers(Nmax=0)  # Assuming a default Nmax of 100, can be adjusted as needed
+        h = FeatureHelpers(Nmax=0)
 
-        # Pre-processing the links to create node features
+        # Pre-processing the links to create node features and gather intersections
         node_features = []
+        intersections = set()
+        outgoing = defaultdict(list)
+        incoming = defaultdict(list)
         for i, link in enumerate(tqdm.tqdm(links, desc="Processing links")):
             attrs = link.attrib
+            from_id = attrs["from"]
+            to_id = attrs["to"]
+            intersections.update([from_id, to_id])
+            outgoing[from_id].append(i)
+            incoming[to_id].append(i)
+
             feature = torch.zeros(h.ROAD_INDEX - h.MAX_NUMBER_OF_AGENT + 1, dtype=torch.float32)
             feature[h.ROAD_INDEX] = i
             feature[h.LENGHT_OF_ROAD] = float(attrs["length"])
@@ -113,52 +122,87 @@ class TransportationSimulator:
                 feature[h.LENGHT_OF_ROAD] * float(attrs["permlanes"]) / effective_cell_size
             ) + 1
             node_features.append(feature)
-        
+
+        # List intersections
+        print(f"Found intersections: {sorted(intersections)}")
+
         # Update Nmax based on the maximum number of agents in the node features
         self.Nmax = int(max(f[h.MAX_NUMBER_OF_AGENT] for f in node_features).item() + 1)
         h = FeatureHelpers(Nmax=self.Nmax)
         self.h = h
 
-        # Create the node features tensor
-        x = torch.zeros((len(node_features), int(3*self.Nmax + 7)), dtype=torch.float32)
-        for i in tqdm.tqdm(range(len(node_features)), desc="Building node features"):
+        # Create the node features tensor including SRC/DEST nodes
+        num_roads = len(node_features)
+        num_inters = len(intersections)
+        x = torch.zeros((num_roads + 2 * num_inters, int(3*self.Nmax + 7)), dtype=torch.float32)
+        for i in tqdm.tqdm(range(num_roads), desc="Building node features"):
             x[i, h.MAX_NUMBER_OF_AGENT : h.ROAD_INDEX + 1] = node_features[i]
-        
-        
-        # Prepare the mapping : from_nodes -> [link indices]
-        nodes = defaultdict(list)
-        for i, link in enumerate(tqdm.tqdm(links, desc="Building edge index")):
-            nodes[link.get("from")].append(i)
 
-        # Create the edge and the edge attributes
-        to_list = []
-        from_list = []
-        edge_attr = []
+        neutral_feature = torch.zeros(int(3*self.Nmax + 7), dtype=torch.float32)
+        neutral_feature[h.ROAD_INDEX] = -1
+        intersection_indices = {}
+        for idx, inter in enumerate(sorted(intersections)):
+            src_idx = num_roads + 2 * idx
+            dest_idx = src_idx + 1
+            x[src_idx] = neutral_feature
+            x[dest_idx] = neutral_feature
+            intersection_indices[inter] = (src_idx, dest_idx)
 
-        for j, link in enumerate(tqdm.tqdm(links, desc="Building edge attributes")):
+        # Create the route->route edges
+        route_from_list = []
+        route_to_list = []
+        route_edge_attr = []
+        for j, link in enumerate(tqdm.tqdm(links, desc="Building route→route edges")):
             attrs = link.attrib
             upstream = j
             to_node = attrs["to"]
             total_flow = 0.0
-            edge_indices_start = len(edge_attr)
+            edge_indices_start = len(route_edge_attr)
 
-            for downstream in nodes[to_node]:
-                from_list.append(upstream)
-                to_list.append(downstream)
+            for downstream in outgoing[to_node]:
+                route_from_list.append(upstream)
+                route_to_list.append(downstream)
                 cap = float(attrs["capacity"])
-                edge_attr.append(cap)
+                route_edge_attr.append(cap)
                 total_flow += cap
 
-            # Normalisation
-            for i in range(edge_indices_start, len(edge_attr)):
-                edge_attr[i] /= total_flow if total_flow > 0 else 1.0
+            for i in range(edge_indices_start, len(route_edge_attr)):
+                route_edge_attr[i] /= total_flow if total_flow > 0 else 1.0
 
-        # Convert NumPy to Torch
-        edge_index = torch.from_numpy(np.array([from_list, to_list], dtype=np.int64))
-        edge_attr = torch.from_numpy(np.array(edge_attr, dtype=np.float32).reshape(-1, 1))
+        edge_index_routes = torch.tensor([route_from_list, route_to_list], dtype=torch.long)
+        edge_attr_routes = torch.tensor(route_edge_attr, dtype=torch.float32).view(-1, 1)
+
+        # Build complete edge list including SRC/DEST nodes
+        from_list = route_from_list.copy()
+        to_list = route_to_list.copy()
+        edge_attr = route_edge_attr.copy()
+
+        # SRC(i) -> route edges
+        for inter, (src_idx, _) in intersection_indices.items():
+            for road in outgoing.get(inter, []):
+                from_list.append(src_idx)
+                to_list.append(road)
+                edge_attr.append(0.0)
+
+        # route -> DEST(j) edges
+        for inter, (_, dest_idx) in intersection_indices.items():
+            for road in incoming.get(inter, []):
+                from_list.append(road)
+                to_list.append(dest_idx)
+                edge_attr.append(0.0)
+
+        edge_index = torch.tensor([from_list, to_list], dtype=torch.long)
+        edge_attr = torch.tensor(edge_attr, dtype=torch.float32).view(-1, 1)
 
         # Creating the PyG Graph object
-        self.graph = Data(x=x, edge_index=edge_index, edge_attr=edge_attr).to(self.device)
+        self.graph = Data(
+            x=x,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            edge_index_routes=edge_index_routes,
+            edge_attr_routes=edge_attr_routes,
+            num_roads=num_roads,
+        ).to(self.device)
 
         # Print the execution time
         end_time = time.time()

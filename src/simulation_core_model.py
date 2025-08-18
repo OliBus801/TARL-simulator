@@ -55,14 +55,22 @@ class SimulationCoreModel(nn.Module):
             The output graph data after processing through the MPNN layers.
         """
         n = torch.sum(graph.x[:, self.direction_mpnn.NUMBER_OF_AGENT])
-        # Process the graph through the DirectionMPNN layer
-        node_feature = self.direction_mpnn(graph.x, graph.edge_index, graph.edge_attr)
-        
-        # Process the graph through the ResponseMPNN layer
-        node_feature = self.response_mpnn(node_feature, graph.edge_index, graph.edge_attr)
+        num_roads = graph.num_roads
+        x_roads = graph.x[:num_roads]
+        node_feature = self.direction_mpnn(x_roads, graph.edge_index_routes, graph.edge_attr_routes)
+        node_feature = self.response_mpnn(node_feature, graph.edge_index_routes, graph.edge_attr_routes)
 
-        # Update the graph with the new features
-        updated_graph = Data(x=node_feature, edge_index=graph.edge_index, edge_attr=graph.edge_attr)
+        x_full = graph.x.clone()
+        x_full[:num_roads] = node_feature
+
+        updated_graph = Data(
+            x=x_full,
+            edge_index=graph.edge_index,
+            edge_attr=graph.edge_attr,
+            edge_index_routes=graph.edge_index_routes,
+            edge_attr_routes=graph.edge_attr_routes,
+            num_roads=num_roads,
+        )
         
         if n != torch.sum(updated_graph.x[:, self.direction_mpnn.NUMBER_OF_AGENT]):
             pass
