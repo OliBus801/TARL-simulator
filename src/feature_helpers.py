@@ -23,6 +23,8 @@ class FeatureHelpers:
             - The index of the selected road. (?)
         ROAD_INDEX: 3 * Nmax + 6
             - The index of the road.
+        NODE_TYPE: 3 * Nmax + 7
+            - Type of node (e.g. road, source or destination).
         HEAD_FIFO: 0
             - The ID of the agent at the head of the FIFO queue.
         HEAD_FIFO_TIME: Nmax
@@ -45,10 +47,11 @@ class FeatureHelpers:
         self.MAX_FLOW = 3 * Nmax + 4
         self.SELECTED_ROAD = 3 * Nmax + 5
         self.ROAD_INDEX = 3 * Nmax + 6
+        self.NODE_TYPE = 3 * Nmax + 7
         self.HEAD_FIFO = 0
         self.HEAD_FIFO_TIME = Nmax
         self.HEAD_FIFO_CONG = 2*Nmax
-        self.CONGESTION_FILE = 3 
+        self.CONGESTION_FILE = 3
 
 class AgentFeatureHelpers:
     """ A class to help with agent feature indexing """

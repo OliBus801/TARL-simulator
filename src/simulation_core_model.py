@@ -41,22 +41,13 @@ class SimulationCoreModel(nn.Module):
         Parameters
         ----------
         graph : Data
-            The graph representing the traffic network
-        edge_index : torch.Tensor
-            Edge index
-        edge_attr : torch.Tensor
-            Edge attribute
+            The graph representing the traffic network.
         """
-        """
-        Forward pass of the simulation core model.
-        Args:
-            graph: The input graph data.
-        Returns:
-            The output graph data after processing through the MPNN layers.
-        """
+        # Forward pass of the simulation core model.
         n = torch.sum(graph.x[:, self.direction_mpnn.NUMBER_OF_AGENT])
         num_roads = graph.num_roads
         x_roads = graph.x[:num_roads]
+        # Use only the road graph for message passing
         node_feature = self.direction_mpnn(x_roads, graph.edge_index_routes, graph.edge_attr_routes)
         node_feature = self.response_mpnn(node_feature, graph.edge_index_routes, graph.edge_attr_routes)
 
