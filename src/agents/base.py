@@ -208,7 +208,7 @@ class Agents(AgentFeatureHelpers):
                 counts = np.bincount(dep_hours, minlength=24)
 
                 # Impression formatée
-                print("📊 | Histogramme des départs (bins = 1h) (null counts ignored) :")
+                print("📊 | Departure histogram (bins = 1h) (null counts ignored):")
                 for h in range(24):
                     if counts[h] >= 1:
                         print(f"{h:02d}h : {counts[h]}")
