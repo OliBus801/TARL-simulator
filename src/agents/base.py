@@ -363,34 +363,16 @@ class Agents(AgentFeatureHelpers):
         ----------
         """
         node_feature = graph.x.clone()
+        total_nodes = node_feature.size(0)
         num_roads = graph.num_roads
 
-        # --- Sample for road nodes -------------------------------------------------
-        adj_routes = to_dense_adj(
-            graph.edge_index_routes, max_num_nodes=num_roads
-        ).squeeze(0)
-        out_routes = adj_routes.sum(dim=-1)
-        mask_routes = out_routes > 0
-        if mask_routes.any():
-            adj_norm = adj_routes[mask_routes] / out_routes[mask_routes].unsqueeze(-1)
-            index = torch.multinomial(adj_norm, num_samples=1).squeeze(1)
-            road_idx = torch.arange(num_roads, device=node_feature.device)[mask_routes]
-            node_feature[road_idx, h.SELECTED_ROAD] = index.to(torch.float)
-
-        # --- Sample for SRC nodes --------------------------------------------------
-        total_nodes = node_feature.size(0)
-        adj_full = to_dense_adj(
-            graph.edge_index, max_num_nodes=total_nodes
-        ).squeeze(0)
-        out_full = adj_full.sum(dim=-1)
-        src_mask = (torch.arange(total_nodes, device=node_feature.device) >= num_roads) & (
-            out_full > 0
-        )
-        if src_mask.any():
-            adj_src = adj_full[src_mask]
-            adj_src = adj_src / adj_src.sum(dim=-1, keepdim=True)
-            index = torch.multinomial(adj_src, num_samples=1).squeeze(1)
-            node_feature[src_mask, h.SELECTED_ROAD] = index.to(torch.float)
+        # Get the adjacency matrix for all the nodes, but remove the ones with no outgoing connections
+        adj = to_dense_adj(graph.edge_index, max_num_nodes=total_nodes).squeeze(0)
+        adj_mask = adj.sum(dim=-1) > 0
+        adj = adj[adj_mask]
+        adj_norm = adj / adj.sum(dim=-1, keepdim=True)
+        index = torch.multinomial(adj_norm, num_samples=1).squeeze(1)
+        node_feature[adj_mask, h.SELECTED_ROAD] = index.to(torch.float)
 
         updated_graph = Data(
             x=node_feature,

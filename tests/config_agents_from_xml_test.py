@@ -45,7 +45,7 @@ def tmp_scenario_dir(tmp_path):
           <act type="h" x="-20000" y="0" link="1" end_time="06:00" />
           <act type="w" x="-10000" y="0" link="3" end_time="07:00"/>
           <act type="h" x="-20000" y="0" link="1" end_time="08:00"/>
-          <act type="w" x="-10000" y="0" link="3" end_time="09:00"/>
+          <act type="w" x="-20000" y="0" link="3" end_time="09:00"/>
         </plan>
       </person>
       <!-- Person 2 : One trip -->
@@ -60,10 +60,10 @@ def tmp_scenario_dir(tmp_path):
         <plan>
         </plan>
       </person>
-      <!-- Person 4 : One Trip at different time and where origin = destination -->
+      <!-- Person 4 : One Trip at different times and different starting link -->
       <person id="4">
         <plan>
-          <act type="h" x="-20000" y="0" link="3" end_time="04:20" />
+          <act type="h" x="-20000" y="0" link="3" end_time="06:30"/>
           <act type="w" x="-10000" y="0" link="1" end_time="07:00"/>
         </plan>
       </person>

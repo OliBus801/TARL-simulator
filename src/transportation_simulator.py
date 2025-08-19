@@ -592,8 +592,7 @@ class TransportationSimulator:
 
         cap = self.graph.x[:, h.MAX_FLOW]        # (N,)
         # Avoid division by zero by replacing 0 → NaN
-        cap_safe = cap.clone()
-        cap_safe[cap_safe == 0] = float('nan')
+        cap_safe = cap.clone()[cap != 0]
 
         # V/C ratio: broadcast cap_safe.unsqueeze(1) → (N, H)
         vc = counts_per_node.float() / cap_safe.unsqueeze(1)           # (N, H)

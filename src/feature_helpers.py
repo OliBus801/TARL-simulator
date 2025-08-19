@@ -7,7 +7,7 @@ class FeatureHelpers:
             - The FIFO queue. Contains the IDs of agents.
         AGENT_TIME_ARRIVAL: slice(Nmax, 2 * Nmax)
             - The arrival times of agents in the FIFO queue.
-        AGENT_POSITION_AT_ARRIVAL: slice(2 * Nmax, 3 * Nmax)
+        AGENT_POSITION_AT_ARRIVAL: slice(2 * Nmax, 3 * Nmax) (Useless ?)
             - The positions of agents at their arrival.
         MAX_NUMBER_OF_AGENT: 3 * Nmax
             - The size of the FIFO queue.
@@ -20,7 +20,7 @@ class FeatureHelpers:
         MAX_FLOW: 3 * Nmax + 4
             - The maximum flow capacity of the road.
         SELECTED_ROAD: 3 * Nmax + 5
-            - The index of the selected road. (?)
+            - The index of the next selected road of the first agent in the FIFO queue.
         ROAD_INDEX: 3 * Nmax + 6
             - The index of the road.
         NODE_TYPE: 3 * Nmax + 7
@@ -28,9 +28,9 @@ class FeatureHelpers:
         HEAD_FIFO: 0
             - The ID of the agent at the head of the FIFO queue.
         HEAD_FIFO_TIME: Nmax
-            - The time at the head of the FIFO queue. (?)
+            - The time of arrival of the agent at the head of the FIFO queue.
         HEAD_FIFO_CONG: 2*Nmax
-            - The congestion value at the head of the FIFO queue. (?)
+            - This actually points to the agent position at arrival of the agent at the head of the FIFO queue. (Useless ?)
         CONGESTION_FILE: 3
             - A constant that determines the congestion buffer size reserved only to resolve gridlock situations.
     """
