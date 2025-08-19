@@ -110,10 +110,11 @@ def simple_network_file(tmp_path):
 def simulator(device, simple_network_file):
     sim = TransportationSimulator(device)
     sim.config_network(simple_network_file)
-    sim.agent.agent_features = torch.zeros((1, 9))
-    sim.agent.agent_features[0, 0] = 2  # origin SRC node
-    sim.agent.agent_features[0, 1] = 5  # destination DEST node
-    sim.agent.agent_features[0, 2] = 0  # departure time
+    sim.agent.agent_features = torch.zeros((2, 9))
+    sim.agent.agent_features[0, sim.agent.DEPARTURE_TIME] = 25 * 3600  # dummy agent
+    sim.agent.agent_features[1, 0] = 2  # origin SRC node
+    sim.agent.agent_features[1, 1] = 5  # destination DEST node
+    sim.agent.agent_features[1, 2] = 0  # departure time
     sim.config_parameters(start_time=1)
     sim.agent.set_time(sim.time)
     return sim

@@ -40,7 +40,8 @@ class ResponseMPNN(MessagePassing):
     
     def message(self, x_i: torch.Tensor, x_j: torch.Tensor) -> torch.Tensor:
         """
-        Create the message containing the agent selected.
+        Compute a per-edge mask (E, 1) telling whether the downstream node (x_j)
+        has accepted the agent that the upstream node (x_i) intended to send (its FIFO head).
 
         Parameters
         ----------
@@ -50,24 +51,36 @@ class ResponseMPNN(MessagePassing):
             Downstream node features
 
         Returns
-        ----------
-        message:
-            The message that contains in the first column the index of the selected agent
+        -------
+        torch.Tensor
+            A float tensor of shape [E, 1] with values in {0.0, 1.0}.
+            1.0 means that, for edge (i -> j), the downstream node j has accepted
+            the agent that upstream i intended to send (its FIFO head); 0.0 otherwise.
+            Use as a gate to apply state updates (e.g., pop from i’s FIFO).
         """
-        # x_j is the source node and x_i is the target node
-        
-        # Look for the last agent in the queue
-        end_queue = (x_j[:, self.NUMBER_OF_AGENT]).to(torch.int64) - 1
-        is_there_agent = x_j[:, self.NUMBER_OF_AGENT] != 0
-        last_agent = x_j[torch.arange(x_i.size(0)), end_queue]
-        first_agent = x_i[:, self.HEAD_FIFO]
-        
-        # Message the agent to the next road
-        message = (last_agent == first_agent) & is_there_agent
-        if torch.any(message):
-            pass
-        message = message.float()
-        return message.unsqueeze(1)
+        # x_i: upstream (source), x_j: downstream (target) for edge (i -> j)
+        E, device = x_i.size(0), x_i.device
+
+        # Agent counts (int64 for safe indexing)
+        cnt_up = x_i[:, self.NUMBER_OF_AGENT].to(torch.int64)
+        cnt_dn = x_j[:, self.NUMBER_OF_AGENT].to(torch.int64)
+        has_up = cnt_up > 0        # upstream has something to send
+        has_dn = cnt_dn > 0        # downstream has a valid tail
+
+        # Upstream head ID and downstream tail ID
+        head_id = x_i[:, self.HEAD_FIFO].to(torch.int64)
+        tail_idx = torch.clamp(cnt_dn - 1, min=0)
+        rows = torch.arange(E, device=device)
+        tail_id_all = x_j[rows, tail_idx]
+        sentinel = torch.full((E,), -1, dtype=torch.int64, device=device)
+        tail_id = torch.where(has_dn, tail_id_all.to(torch.int64), sentinel)
+
+        # Gate: downstream accepted the agent upstream intended to send
+        message = (has_up & has_dn & (tail_id == head_id)).unsqueeze(1)
+
+        # Float mask (E, 1)
+        return message.to(dtype=x_i.dtype)
+
 
     def update(self, aggr_out: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
         """
@@ -91,6 +104,9 @@ class ResponseMPNN(MessagePassing):
         # Mask the agents that have been transferred
         mask_update = (aggr_out > 0).squeeze(1)
 
+        # If no agents needs to be updated, return the original features
+        if not mask_update.any():
+            return x
 
         # Compute the slicing
         AGENT_POSITION_UPSTREAM = slice(self.AGENT_POSITION.start, self.AGENT_POSITION.stop - 1)

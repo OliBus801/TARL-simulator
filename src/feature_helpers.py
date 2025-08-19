@@ -27,9 +27,9 @@ class FeatureHelpers:
             - Type of node (e.g. road, source or destination).
         HEAD_FIFO: 0
             - The ID of the agent at the head of the FIFO queue.
-        HEAD_FIFO_ARRIVAL: Nmax
+        HEAD_FIFO_ARRIVAL_TIME: Nmax
             - The arrival time of the agent at the head of the FIFO queue.
-        HEAD_FIFO_DEPARTURE: 2 * Nmax
+        HEAD_FIFO_DEPARTURE_TIME: 2 * Nmax
             - The departure time of the agent at the head of the FIFO queue.
         CONGESTION_FILE: 3
             - A constant that determines the congestion buffer size reserved only to resolve gridlock situations.
@@ -49,8 +49,8 @@ class FeatureHelpers:
         self.ROAD_INDEX = 3 * Nmax + 6
         self.NODE_TYPE = 3 * Nmax + 7
         self.HEAD_FIFO = 0
-        self.HEAD_FIFO_ARRIVAL = Nmax
-        self.HEAD_FIFO_DEPARTURE = 2 * Nmax
+        self.HEAD_FIFO_ARRIVAL_TIME = Nmax
+        self.HEAD_FIFO_DEPARTURE_TIME = 2 * Nmax
         self.CONGESTION_FILE = 3
 
 class AgentFeatureHelpers:

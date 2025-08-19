@@ -260,19 +260,21 @@ class TransportationSimulator:
         """
         self.model_core = SimulationCoreModel(self.Nmax, self.device, self.time)
     
-    def set_time(self, time, increment):
+    def set_time(self, time):
         """
-        
+        Set the simulation time for the environment, agent, and model core.
+        Args:
+            time (float): The current simulation time.
         """
         self.time = time
         self.agent.set_time(time)
-        self.model_core.set_time(time + increment)
+        self.model_core.set_time(time)
 
     def run(self):
         h = FeatureHelpers(Nmax=self.Nmax)
 
         
-        # Insert first agent in the network
+        # Insert agent in the network
         b = time.time()
         self.graph.x = self.agent.insert_agent_into_network(self.graph, h)
         e = time.time()
@@ -288,7 +290,7 @@ class TransportationSimulator:
 
         
         # Run the simulation
-        old_positions = self.graph.x[:, h.NUMBER_OF_AGENT]
+        #old_positions = self.graph.x[:, h.NUMBER_OF_AGENT]
         b = e
         self.graph = self.agent.choice(self.graph, h)
         e = time.time()
@@ -299,7 +301,8 @@ class TransportationSimulator:
         self.graph = self.model_core(self.graph)
         e = time.time()
         self.core_time += e-b
-
+        """
+        # This is broken and maybe not even useful.
         i = 0
         while torch.any(old_positions != self.graph.x[:, h.NUMBER_OF_AGENT]) and i < 5:
             # Compute the direction of the agents
@@ -314,8 +317,8 @@ class TransportationSimulator:
             e = time.time()
             self.core_time += e-b
             i+=1 
-
-        self.set_time(self.time + self.timestep, self.timestep)
+        """
+        self.set_time(self.time + self.timestep)
 
         value_on_way = torch.sum(self.agent.agent_features[:, self.agent.ON_WAY])
         value_done = torch.sum(self.agent.agent_features[:, self.agent.DONE])
@@ -450,8 +453,8 @@ class TransportationSimulator:
             return None
         
         # Number of nodes
-        num_nodes = len(self.graph.x)
-        origin_idx = self.graph.edge_index[0]  # [E]
+        num_nodes = self.graph.num_roads
+        origin_idx = self.graph.edge_index_routes[0]  # [E]
 
         # --- Vectorisation temporelle ---
         # Timestamps et matrice [T, E] des valeurs edge-wise
@@ -556,15 +559,19 @@ class TransportationSimulator:
         import pandas as pd
         # --- 1) Hourly traffic counts ---
         
-        # Retrieve the collected data from the model core
+        # Retrieve the collected data from the model core and agent withdrawals 
         update_history = getattr(self.model_core.response_mpnn, 'update_history', [])
-        if not update_history:
+        withdraw_history = getattr(self.agent, 'withdraw_history', [])
+        combined_history = update_history + withdraw_history
+        if not combined_history:
             print("No update history available for computing node metrics.")
             return {}
         
+    
+        
         # Retrieve all times and all masks into tensors
-        times = torch.tensor([t for t, _ in update_history], dtype=torch.long)      # (T,)
-        mask_matrix = torch.stack([mask for _, mask in update_history], dim=0)      # (T, N), dtype=torch.bool
+        times = torch.tensor([t for t, _ in combined_history], dtype=torch.long)      # (T,)
+        mask_matrix = torch.stack([mask for _, mask in combined_history], dim=0)      # (T, N), dtype=torch.bool
 
         # Compute hours and hourly dimension
         hours = (times // 3600).clamp(min=0)    # (T,)
@@ -590,9 +597,10 @@ class TransportationSimulator:
 
         h = FeatureHelpers(Nmax=self.Nmax)
 
-        cap = self.graph.x[:, h.MAX_FLOW]        # (N,)
-        # Avoid division by zero by replacing 0 → NaN
-        cap_safe = cap.clone()[cap != 0]
+        cap = self.graph.x[:num_nodes, h.MAX_FLOW]        # (N,)
+        # Avoid division by zero by replacing 0 → NaN while keeping shape
+        cap_safe = cap.clone()
+        cap_safe[cap_safe == 0] = float('nan')
 
         # V/C ratio: broadcast cap_safe.unsqueeze(1) → (N, H)
         vc = counts_per_node.float() / cap_safe.unsqueeze(1)           # (N, H)
@@ -643,8 +651,8 @@ class TransportationSimulator:
     def get_info(self, road_id, h: FeatureHelpers):
 
         road = self.graph.x[road_id]
-        time_arrival = road[h.HEAD_FIFO_ARRIVAL]
-        time_departure = road[h.HEAD_FIFO_DEPARTURE]
+        time_arrival = road[h.HEAD_FIFO_ARRIVAL_TIME]
+        time_departure = road[h.HEAD_FIFO_DEPARTURE_TIME]
 
         return (
             f"Route {road_id} : {road[h.NUMBER_OF_AGENT]} / {road[h.MAX_NUMBER_OF_AGENT]} \n"

@@ -29,6 +29,7 @@ class Agents(AgentFeatureHelpers):
         self.agent_features = None
         self.time = 0
         self.device = device
+        self.withdraw_history: list[tuple[int, torch.BoolTensor]] = []
 
 
 
@@ -296,6 +297,11 @@ class Agents(AgentFeatureHelpers):
         # Pre-compute adjacency matrix to check connectivity to destinations
         adj = to_dense_adj(edge_index, max_num_nodes=x.size(0)).squeeze(0).to(x.device)
 
+        # Only keep a withdrawal mask for the road nodes; intersection are ignored
+        num_roads = int((x[:, h.ROAD_INDEX] >= 0).sum().item())
+        withdrawn_mask = torch.zeros(num_roads, dtype=torch.bool, device=x.device)
+
+
         while True:
             candidate_agent = x_update[:, h.HEAD_FIFO].to(torch.long)
             roads = x_update[:, h.ROAD_INDEX].to(torch.long)
@@ -303,11 +309,14 @@ class Agents(AgentFeatureHelpers):
 
             # Check if an edge exists from each road to the candidate's destination
             connectivity = adj[roads, dest] > 0
-            mask = connectivity & (x_update[:, h.NUMBER_OF_AGENT] != 0)
+            mask = (connectivity 
+                    & (x_update[:, h.NUMBER_OF_AGENT] != 0)
+                    & (x_update[:, h.HEAD_FIFO_DEPARTURE_TIME] <= self.time))
 
-            if not torch.any(mask):
+            if not torch.any(mask[:num_roads]):
                 break
 
+            withdrawn_mask |= mask[:num_roads]  # Update the mask for roads only
             agents_to_withdraw = candidate_agent[mask]
 
             # Withdraw these agents from the network
@@ -319,6 +328,7 @@ class Agents(AgentFeatureHelpers):
             self.agent_features[agents_to_withdraw, self.ON_WAY] = 0
             self.agent_features[agents_to_withdraw, self.ARRIVAL_TIME] = self.time
 
+        self.withdraw_history.append((self.time, withdrawn_mask.clone()))
         return x_update
 
 
@@ -376,13 +386,43 @@ class Agents(AgentFeatureHelpers):
         total_nodes = node_feature.size(0)
         num_roads = graph.num_roads
 
-        # Get the adjacency matrix for all the nodes, but remove the ones with no outgoing connections
-        adj = to_dense_adj(graph.edge_index, max_num_nodes=total_nodes).squeeze(0)
-        adj_mask = adj.sum(dim=-1) > 0
-        adj = adj[adj_mask]
-        adj_norm = adj / adj.sum(dim=-1, keepdim=True)
-        index = torch.multinomial(adj_norm, num_samples=1).squeeze(1)
-        node_feature[adj_mask, h.SELECTED_ROAD] = index.to(torch.float)
+        # --- ROUTES -> ROUTES ---
+        # Adjacency only between roads
+        road_adj = to_dense_adj(
+            graph.edge_index_routes, max_num_nodes=num_roads
+        ).squeeze(0)
+        road_mask = road_adj.sum(dim=-1) > 0
+        road_probs = road_adj[road_mask]
+        road_probs = road_probs / road_probs.sum(dim=-1, keepdim=True)
+
+        # ---- SRC nodes ----
+        edge_index = graph.edge_index
+        src_edge_mask = edge_index[0] >= num_roads
+        src_edges = edge_index[:, src_edge_mask]
+
+        num_src = (total_nodes - num_roads + 1) // 2
+        src_adj = torch.zeros((num_src, num_roads), device=node_feature.device)
+        src_rows = (src_edges[0] - num_roads) // 2
+        src_cols = src_edges[1]
+        src_adj[src_rows, src_cols] = 1
+        src_mask = src_adj.sum(dim=-1) > 0
+        src_probs = src_adj[src_mask]
+        src_probs = src_probs / src_probs.sum(dim=-1, keepdim=True)
+
+
+        # Sample next roads
+        probs = torch.cat([road_probs, src_probs], dim=0)
+        if probs.numel() > 0:
+            sampled = torch.multinomial(probs, num_samples=1).squeeze(1)
+            num_roads_sel = road_probs.size(0)
+            road_ids = torch.arange(num_roads, device=node_feature.device)[road_mask]
+            node_feature[road_ids, h.SELECTED_ROAD] = sampled[:num_roads_sel].to(
+                torch.float
+            )
+            src_ids = torch.arange(num_src, device=node_feature.device)[src_mask]
+            node_feature[num_roads + 2 * src_ids, h.SELECTED_ROAD] = sampled[
+                num_roads_sel:
+            ].to(torch.float)
 
         updated_graph = Data(
             x=node_feature,
@@ -390,7 +430,7 @@ class Agents(AgentFeatureHelpers):
             edge_attr=graph.edge_attr,
             edge_index_routes=graph.edge_index_routes,
             edge_attr_routes=graph.edge_attr_routes,
-            num_roads=num_roads,
+            num_roads=graph.num_roads,
         )
         return updated_graph
     
@@ -400,12 +440,13 @@ class Agents(AgentFeatureHelpers):
         """
         self.agent_features[:, self.ON_WAY] = 0.0
         self.agent_features[:, self.DONE] = 0.0
+        self.withdraw_history = []
+
         
 
     def set_time(self, time):
         """
-        Set the time 
-        
+        Set the time for the agents.
 
         Parameters
         ----------
@@ -420,7 +461,7 @@ class DijkstraAgents(Agents):
     def __init__(self, device):
         super().__init__(device)
         self.count = 0
-        self.refresh_rate = 1000000 # Number of iterations before refreshing the Dijkstra computing
+        self.refresh_rate = 10 # Number of iterations before refreshing the Dijkstra computing
 
 
     def choice(self, graph: Data, h: FeatureHelpers):
@@ -436,7 +477,7 @@ class DijkstraAgents(Agents):
         """
 
         if self.count % self.refresh_rate == 0:
-            # Compute travel time
+            # Compute travel time on the routes
             x_j = graph.x[graph.edge_index[0]]  # Source node
             critical_number = x_j[:, h.MAX_FLOW] * x_j[:, h.FREE_FLOW_TIME_TRAVEL] / 3600
             time_congestion = x_j[:, h.FREE_FLOW_TIME_TRAVEL] * (
@@ -479,12 +520,14 @@ class DijkstraAgents(Agents):
         x_update[:, h.SELECTED_ROAD] = self.next_hop_tensor[idx, destinations]
 
         # Mise à jour du graphe
-        updated_graph = Data(x=x_update, edge_index=graph.edge_index, edge_attr=graph.edge_attr)
+        updated_graph = Data(
+            x=x_update,
+            edge_index=graph.edge_index,
+            edge_attr=graph.edge_attr,
+            edge_index_routes=graph.edge_index_routes,
+            edge_attr_routes=graph.edge_attr_routes,
+            num_roads=graph.num_roads
+        )
         self.count += 1
         return updated_graph
-    
-
-
-
-
 

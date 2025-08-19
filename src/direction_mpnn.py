@@ -51,14 +51,14 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         
         
         # Time departure pre-computed at agent insertion
-        time_departure = x_j[:, self.HEAD_FIFO_DEPARTURE].unsqueeze(1)
-        time_arrival = x_j[:, self.HEAD_FIFO_ARRIVAL]
+        time_departure = x_j[:, self.HEAD_FIFO_DEPARTURE_TIME].unsqueeze(1)
+        time_arrival = x_j[:, self.HEAD_FIFO_ARRIVAL_TIME]
 
         # Agent identifier
         agent_id = x_j[:, self.HEAD_FIFO].unsqueeze(1)
 
-        # Compute the probability to take the road
-        mask = torch.logical_and(time_departure < self.time,  # Check if the departure time is before the actual time
+        # Compute mask : Can we send the agent on the downstream node ?
+        mask = torch.logical_and(time_departure <= self.time,  # Check if we reached the departure time
                                  (x_i[:, self.NUMBER_OF_AGENT] < x_i[:, self.MAX_NUMBER_OF_AGENT] - self.CONGESTION_FILE).unsqueeze(1)) # Check if the fifo is not full
         mask = torch.logical_and(mask, (x_j[:, self.SELECTED_ROAD] == x_i[:, self.ROAD_INDEX]).unsqueeze(1)) # Check if the direction is the road
         mask = torch.logical_and(mask, (x_j[:, self.NUMBER_OF_AGENT] > 0).unsqueeze(1))# Check if there is agent inside the queue
@@ -68,7 +68,7 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         submask = torch.logical_and(submask, x_j[:, self.MAX_NUMBER_OF_AGENT] - x_j[:, self.NUMBER_OF_AGENT] <= x_i[:, self.MAX_NUMBER_OF_AGENT] - x_i[:, self.NUMBER_OF_AGENT])
         submask = torch.logical_and(submask, (x_j[:, self.SELECTED_ROAD] == x_i[:, self.ROAD_INDEX]))
         mask = torch.logical_or(mask, submask.unsqueeze(1))  # If there is some 
-        prob = edge_attr* mask.float()
+        prob = edge_attr * mask.float()
 
         # Compute the road optimality data
         travel_time = time_departure.squeeze(1) - time_arrival
