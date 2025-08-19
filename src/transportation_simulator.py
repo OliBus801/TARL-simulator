@@ -329,7 +329,7 @@ class TransportationSimulator:
     def reset(self):
         h = FeatureHelpers(Nmax=self.Nmax)
         torch.zero_(self.graph.x[:, h.AGENT_POSITION])
-        torch.zero_(self.graph.x[:, h.AGENT_POSITION_AT_ARRIVAL])
+        torch.zero_(self.graph.x[:, h.AGENT_TIME_DEPARTURE])
         torch.zero_(self.graph.x[:, h.AGENT_TIME_ARRIVAL])
         torch.zero_(self.graph.x[:, h.NUMBER_OF_AGENT])
         
@@ -643,21 +643,15 @@ class TransportationSimulator:
     def get_info(self, road_id, h: FeatureHelpers):
 
         road = self.graph.x[road_id]
-        # Compute the time departure
-        critical_number = road[h.MAX_FLOW] * road[h.FREE_FLOW_TIME_TRAVEL] /3600
-        time_congestion = road[h.FREE_FLOW_TIME_TRAVEL] * (road[h.MAX_NUMBER_OF_AGENT] + 10 - critical_number) /(road[h.MAX_NUMBER_OF_AGENT]+10 - road[h.HEAD_FIFO_CONG])
-        
-        # Time departure
-        time_arrival = road[h.HEAD_FIFO_TIME]
-        time_departure = time_arrival + torch.max(road[h.FREE_FLOW_TIME_TRAVEL], time_congestion)
+        time_arrival = road[h.HEAD_FIFO_ARRIVAL]
+        time_departure = road[h.HEAD_FIFO_DEPARTURE]
 
-        # Time departure
-        time_arrival = road[h.HEAD_FIFO_TIME]
-        time_departure = time_arrival + max(road[h.FREE_FLOW_TIME_TRAVEL], time_congestion)
-        return (f"Route {road_id} : {road[h.NUMBER_OF_AGENT]} / {road[h.MAX_NUMBER_OF_AGENT]} \n"
-                f"Queue: {road[h.AGENT_POSITION][:15]}\n" 
-                f"Prochain depart dans {time_departure - self.time} vers la route {road[h.SELECTED_ROAD]}\n"
-                f"Heure actuel : {self.time}")
+        return (
+            f"Route {road_id} : {road[h.NUMBER_OF_AGENT]} / {road[h.MAX_NUMBER_OF_AGENT]} \n"
+            f"Queue: {road[h.AGENT_POSITION][:15]}\n"
+            f"Prochain depart dans {time_departure - self.time} vers la route {road[h.SELECTED_ROAD]}\n"
+            f"Heure actuel : {self.time}"
+        )
     
 
     def save(self, path):

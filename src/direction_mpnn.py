@@ -50,14 +50,9 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         """
         
         
-        
-        # Compute the time departure
-        critical_number = x_j[:, self.MAX_FLOW] * x_j[:, self.FREE_FLOW_TIME_TRAVEL] /3600
-        time_congestion = x_j[:, self.FREE_FLOW_TIME_TRAVEL] * (x_j[:, self.MAX_NUMBER_OF_AGENT]+10 - critical_number) /(x_j[:, self.MAX_NUMBER_OF_AGENT]+10 - x_j[:, self.HEAD_FIFO_CONG])
-        
-        # Time departure
-        time_arrival = x_j[:, self.HEAD_FIFO_TIME]
-        time_departure = time_arrival.unsqueeze(1) + torch.max(torch.stack((x_j[:, self.FREE_FLOW_TIME_TRAVEL], time_congestion)), dim=0).values.unsqueeze(1)
+        # Time departure pre-computed at agent insertion
+        time_departure = x_j[:, self.HEAD_FIFO_DEPARTURE].unsqueeze(1)
+        time_arrival = x_j[:, self.HEAD_FIFO_ARRIVAL]
 
         # Agent identifier
         agent_id = x_j[:, self.HEAD_FIFO].unsqueeze(1)
@@ -76,7 +71,8 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         prob = edge_attr* mask.float()
 
         # Compute the road optimality data
-        delta_travel_time = torch.clamp(time_congestion - x_j[:, self.FREE_FLOW_TIME_TRAVEL], min=0)
+        travel_time = time_departure.squeeze(1) - time_arrival
+        delta_travel_time = torch.clamp(travel_time - x_j[:, self.FREE_FLOW_TIME_TRAVEL], min=0)
         self.road_optimality_data = {"delta_travel_time": delta_travel_time}
 
 
@@ -179,16 +175,25 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         x_updated = x.clone()
 
         # Compute the number of agents
-        end_queue = (x_updated[:, self.NUMBER_OF_AGENT]).to(torch.int64)
+        end_queue = x_updated[:, self.NUMBER_OF_AGENT].to(torch.int64)
+        start_counts = x_updated[:, self.NUMBER_OF_AGENT]
         idx = torch.arange(x.size(0), device=x.device)
         x_updated[idx, end_queue] = aggr_out
         x_updated[idx, self.Nmax + end_queue] = self.time
-        x_updated[idx, 2*self.Nmax + end_queue] = x_updated[idx, self.NUMBER_OF_AGENT]
 
+        # Compute and store departure time for the inserted agent
+        critical_number = x_updated[idx, self.MAX_FLOW] * x_updated[idx, self.FREE_FLOW_TIME_TRAVEL] / 3600
+        time_congestion = x_updated[idx, self.FREE_FLOW_TIME_TRAVEL] * (
+            x_updated[idx, self.MAX_NUMBER_OF_AGENT] + 10 - critical_number
+        ) / (x_updated[idx, self.MAX_NUMBER_OF_AGENT] + 10 - start_counts)
+        travel_time = torch.max(
+            torch.stack((x_updated[idx, self.FREE_FLOW_TIME_TRAVEL], time_congestion)), dim=0
+        ).values
+        x_updated[idx, self.AGENT_TIME_DEPARTURE.start + end_queue] = self.time + travel_time
 
         # Update the number of agents on the road
-        is_agent = aggr_out != 0  # So agent who gets ID : 0 are not agent and can broke the simulation
-        x_updated[is_agent, self.NUMBER_OF_AGENT] = x_updated[is_agent, self.NUMBER_OF_AGENT] + 1
+        is_agent = aggr_out != 0  # So agent who gets ID : 0 are not agent and can break the simulation
+        x_updated[is_agent, self.NUMBER_OF_AGENT] = start_counts[is_agent] + 1
         return x_updated
 
     def set_time(self, time):
