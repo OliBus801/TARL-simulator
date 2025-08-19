@@ -193,7 +193,7 @@ class SimulatorEnv(EnvBase):
         if hasattr(self.simulator.model_core.response_mpnn, "update_history"):
             self.simulator.model_core.response_mpnn.update_history = []
 
-        self.simulator.set_time(3600 * 6 - 60, 6)
+        self.simulator.set_time(3600 * 6 - 60)
         x, edge_attr, edge_index, agent_index = self.simulator.state()
         self.simulator.agent.reset()
         reward = torch.tensor([0], dtype=torch.float, device=self.device)
@@ -260,7 +260,7 @@ class SimulatorEnv(EnvBase):
         reward = torch.sum(reward).flatten()
 
         if torch.all(self.old_state == self.simulator.graph.x[:, h.NUMBER_OF_AGENT]):
-            self.simulator.set_time(self.simulator.time + self.simulator.timestep, self.simulator.timestep)
+            self.simulator.set_time(self.simulator.time + self.simulator.timestep)
 
         self.old_state = new_state
         if self.simulator.time > 7 * 3600:
