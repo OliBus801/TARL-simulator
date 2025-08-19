@@ -123,9 +123,6 @@ class TransportationSimulator:
             ) + 1
             node_features.append(feature)
 
-        # List intersections
-        print(f"Found intersections: {sorted(intersections)}")
-
         # Update Nmax based on the maximum number of agents in the node features
         self.Nmax = int(max(f[h.MAX_NUMBER_OF_AGENT] for f in node_features).item() + 1)
         h = FeatureHelpers(Nmax=self.Nmax)
