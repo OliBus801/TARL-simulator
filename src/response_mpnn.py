@@ -95,15 +95,15 @@ class ResponseMPNN(MessagePassing):
         # Compute the slicing
         AGENT_POSITION_UPSTREAM = slice(self.AGENT_POSITION.start, self.AGENT_POSITION.stop - 1)
         AGENT_TIME_ARRIVAL_UPSTREAM = slice(self.AGENT_TIME_ARRIVAL.start, self.AGENT_TIME_ARRIVAL.stop - 1)
-        AGENT_POSITION_AT_ARRIVAL_UPSTREAM = slice(self.AGENT_POSITION_AT_ARRIVAL.start, self.AGENT_POSITION_AT_ARRIVAL.stop - 1)
+        AGENT_TIME_DEPARTURE_UPSTREAM = slice(self.AGENT_TIME_DEPARTURE.start, self.AGENT_TIME_DEPARTURE.stop - 1)
         AGENT_POSITION_DOWNSTREAM = slice(self.AGENT_POSITION.start + 1, self.AGENT_POSITION.stop)
         AGENT_TIME_ARRIVAL_DOWNSTREAM = slice(self.AGENT_TIME_ARRIVAL.start + 1, self.AGENT_TIME_ARRIVAL.stop)
-        AGENT_POSITION_AT_ARRIVAL_DOWNSTREAM = slice(self.AGENT_POSITION_AT_ARRIVAL.start + 1, self.AGENT_POSITION_AT_ARRIVAL.stop)
+        AGENT_TIME_DEPARTURE_DOWNSTREAM = slice(self.AGENT_TIME_DEPARTURE.start + 1, self.AGENT_TIME_DEPARTURE.stop)
 
         # Update the position of the agent
         x_updated[mask_update, AGENT_POSITION_UPSTREAM] = x[mask_update, AGENT_POSITION_DOWNSTREAM]  # Update the position of the agent
         x_updated[mask_update, AGENT_TIME_ARRIVAL_UPSTREAM] = x[mask_update, AGENT_TIME_ARRIVAL_DOWNSTREAM]  # Update the time of arrival of the agent
-        x_updated[mask_update, AGENT_POSITION_AT_ARRIVAL_UPSTREAM] = x[mask_update, AGENT_POSITION_AT_ARRIVAL_DOWNSTREAM]  # Update the position of the agent at arrival
+        x_updated[mask_update, AGENT_TIME_DEPARTURE_UPSTREAM] = x[mask_update, AGENT_TIME_DEPARTURE_DOWNSTREAM]  # Update the time of departure of the agent
         x_updated[mask_update, self.NUMBER_OF_AGENT] = x[mask_update, self.NUMBER_OF_AGENT] - 1  # Update the number of agents on the road
 
         # Store the update mask and current time in the history

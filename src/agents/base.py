@@ -256,7 +256,17 @@ class Agents(AgentFeatureHelpers):
 
         x[road_sorted, h.AGENT_POSITION.start + positions] = agent_sorted.to(torch.float)
         x[road_sorted, h.AGENT_TIME_ARRIVAL.start + positions] = float(self.time)
-        x[road_sorted, h.AGENT_POSITION_AT_ARRIVAL.start + positions] = start_counts.to(x.dtype)
+
+        # Compute and store the time of departure for each inserted agent
+        critical_number = x[road_sorted, h.MAX_FLOW] * x[road_sorted, h.FREE_FLOW_TIME_TRAVEL] / 3600
+        time_congestion = x[road_sorted, h.FREE_FLOW_TIME_TRAVEL] * (
+            x[road_sorted, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number
+        ) / (x[road_sorted, h.MAX_NUMBER_OF_AGENT] + 10 - start_counts.to(x.dtype))
+        travel_time = torch.max(
+            torch.stack((x[road_sorted, h.FREE_FLOW_TIME_TRAVEL], time_congestion)), dim=0
+        ).values
+        time_departure = float(self.time) + travel_time
+        x[road_sorted, h.AGENT_TIME_DEPARTURE.start + positions] = time_departure
 
         x[unique_roads, h.NUMBER_OF_AGENT] += counts.to(x.dtype)
         self.agent_features[agent_sorted, self.ON_WAY] = 1.0
@@ -429,9 +439,9 @@ class DijkstraAgents(Agents):
             # Compute travel time
             x_j = graph.x[graph.edge_index[0]]  # Source node
             critical_number = x_j[:, h.MAX_FLOW] * x_j[:, h.FREE_FLOW_TIME_TRAVEL] / 3600
-            time_congestion = x_j[:, h.FREE_FLOW_TIME_TRAVEL] * (x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number) / (
-                x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - x_j[:, h.HEAD_FIFO_CONG]
-            )
+            time_congestion = x_j[:, h.FREE_FLOW_TIME_TRAVEL] * (
+                x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number
+            ) / (x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - x_j[:, h.NUMBER_OF_AGENT])
 
             # Travel time = max(free-flow, congested)
             time_flow = torch.max(

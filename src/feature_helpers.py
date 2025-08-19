@@ -7,8 +7,8 @@ class FeatureHelpers:
             - The FIFO queue. Contains the IDs of agents.
         AGENT_TIME_ARRIVAL: slice(Nmax, 2 * Nmax)
             - The arrival times of agents in the FIFO queue.
-        AGENT_POSITION_AT_ARRIVAL: slice(2 * Nmax, 3 * Nmax) (Useless ?)
-            - The positions of agents at their arrival.
+        AGENT_TIME_DEPARTURE: slice(2 * Nmax, 3 * Nmax)
+            - The departure times of agents from the FIFO queue.
         MAX_NUMBER_OF_AGENT: 3 * Nmax
             - The size of the FIFO queue.
         NUMBER_OF_AGENT: 3 * Nmax + 1
@@ -27,10 +27,10 @@ class FeatureHelpers:
             - Type of node (e.g. road, source or destination).
         HEAD_FIFO: 0
             - The ID of the agent at the head of the FIFO queue.
-        HEAD_FIFO_TIME: Nmax
-            - The time of arrival of the agent at the head of the FIFO queue.
-        HEAD_FIFO_CONG: 2*Nmax
-            - This actually points to the agent position at arrival of the agent at the head of the FIFO queue. (Useless ?)
+        HEAD_FIFO_ARRIVAL: Nmax
+            - The arrival time of the agent at the head of the FIFO queue.
+        HEAD_FIFO_DEPARTURE: 2 * Nmax
+            - The departure time of the agent at the head of the FIFO queue.
         CONGESTION_FILE: 3
             - A constant that determines the congestion buffer size reserved only to resolve gridlock situations.
     """
@@ -39,7 +39,7 @@ class FeatureHelpers:
         self.Nmax = Nmax
         self.AGENT_POSITION = slice(0, Nmax)
         self.AGENT_TIME_ARRIVAL = slice(Nmax, 2 * Nmax)
-        self.AGENT_POSITION_AT_ARRIVAL = slice(2 * Nmax, 3 * Nmax)
+        self.AGENT_TIME_DEPARTURE = slice(2 * Nmax, 3 * Nmax)
         self.MAX_NUMBER_OF_AGENT = 3 * Nmax
         self.NUMBER_OF_AGENT = 3 * Nmax + 1
         self.FREE_FLOW_TIME_TRAVEL = 3 * Nmax + 2
@@ -49,8 +49,8 @@ class FeatureHelpers:
         self.ROAD_INDEX = 3 * Nmax + 6
         self.NODE_TYPE = 3 * Nmax + 7
         self.HEAD_FIFO = 0
-        self.HEAD_FIFO_TIME = Nmax
-        self.HEAD_FIFO_CONG = 2*Nmax
+        self.HEAD_FIFO_ARRIVAL = Nmax
+        self.HEAD_FIFO_DEPARTURE = 2 * Nmax
         self.CONGESTION_FILE = 3
 
 class AgentFeatureHelpers:
