@@ -330,25 +330,22 @@ class Agents(AgentFeatureHelpers):
 
 
     def withdraw_agent_from_network(
-        self, x: torch.Tensor, edge_index: torch.Tensor, h: FeatureHelpers
+        self, graph: Data, h: FeatureHelpers
     ) -> torch.Tensor:
         """
         Withdraw all agents at the head of the queue that have reached their destination.
 
         Parameters
         ----------
-        x : torch.Tensor
-            Node feature tensor of the road network. This tensor is updated and
-            returned.
-        edge_index : torch.Tensor
-            Graph connectivity of the network in COO format.
+        graph : Data
+            The graph representation of the road network containing the precomputed adjacency matrix.
         h : FeatureHelpers
             Index helpers to understand how columns work.
         """
 
+        x = graph.x
         x_update = x.clone()
-        # Pre-compute adjacency matrix to check connectivity to destinations
-        adj = to_dense_adj(edge_index, max_num_nodes=x.size(0)).squeeze(0).to(x.device)
+        adj = graph.adj_matrix
 
         # Only keep a withdrawal mask for the road nodes; intersection are ignored
         num_roads = int((x[:, h.ROAD_INDEX] >= 0).sum().item())
@@ -424,68 +421,60 @@ class Agents(AgentFeatureHelpers):
         # We make sure that the agent ID: 0 will never join the network
         self.agent_features[0, self.DEPARTURE_TIME] = 48*3600
 
+    @torch.no_grad()
     def choice(self, graph: Data, h: FeatureHelpers):
         """
-        Chose the next direction to take for each agent.
-
-        This samples a downstream road for every node that has outgoing
-        connections. Roads without outgoing connections (e.g. those leading
-        directly to a destination) and DEST nodes are ignored.
-
-        Parameters
-        ----------
+        Sample next road for:
+        - road nodes: use adj[roads, roads]
+        - SRC nodes:  use adj[SRC_rows, roads]
         """
-        node_feature = graph.x.clone()
-        total_nodes = node_feature.size(0)
-        num_roads = graph.num_roads
+        x = graph.x
+        device, dtype = x.device, x.dtype
+        total_nodes = x.size(0)
+        num_roads   = int(graph.num_roads)
 
-        # --- ROUTES -> ROUTES ---
-        # Adjacency only between roads
-        road_adj = to_dense_adj(
-            graph.edge_index_routes, max_num_nodes=num_roads
-        ).squeeze(0)
-        road_mask = road_adj.sum(dim=-1) > 0
+        adj = graph.adj_matrix.to(dtype)  # ensure float for normalization
+
+        # ----- ROADS -> ROADS (top-left block) -----
+        road_adj  = adj[:num_roads, :num_roads]
+        road_out  = road_adj.sum(dim=1)
+        road_mask = road_out > 0
         road_probs = road_adj[road_mask]
-        road_probs = road_probs / road_probs.sum(dim=-1, keepdim=True)
+        if road_probs.numel() > 0:
+            road_probs = road_probs / road_probs.sum(dim=1, keepdim=True)
 
-        # ---- SRC nodes ----
-        edge_index = graph.edge_index
-        src_edge_mask = edge_index[0] >= num_roads
-        src_edges = edge_index[:, src_edge_mask]
+        # ----- SRC -> ROADS (rows = num_roads, num_roads+2, ...) -----
+        # Hypothèse: nodes après les routes alternent SRC, DEST => SRC indices = num_roads + 2*k
+        src_rows_idx = torch.arange(num_roads, total_nodes, 2, device=device)
+        if src_rows_idx.numel() > 0:
+            src_adj  = adj.index_select(0, src_rows_idx)[:, :num_roads]
+            src_out  = src_adj.sum(dim=1)
+            src_mask = src_out > 0
+            src_probs = src_adj[src_mask]
+            if src_probs.numel() > 0:
+                src_probs = src_probs / src_probs.sum(dim=1, keepdim=True)
+        else:
+            src_mask = torch.empty(0, dtype=torch.bool, device=device)
+            src_probs = torch.empty(0, num_roads, dtype=dtype, device=device)
 
-        num_src = (total_nodes - num_roads + 1) // 2
-        src_adj = torch.zeros((num_src, num_roads), device=node_feature.device)
-        src_rows = (src_edges[0] - num_roads) // 2
-        src_cols = src_edges[1]
-        src_adj[src_rows, src_cols] = 1
-        src_mask = src_adj.sum(dim=-1) > 0
-        src_probs = src_adj[src_mask]
-        src_probs = src_probs / src_probs.sum(dim=-1, keepdim=True)
-
-
-        # Sample next roads
+        # ----- Sampling (roads first, then SRC) -----
         probs = torch.cat([road_probs, src_probs], dim=0)
         if probs.numel() > 0:
-            sampled = torch.multinomial(probs, num_samples=1).squeeze(1)
-            num_roads_sel = road_probs.size(0)
-            road_ids = torch.arange(num_roads, device=node_feature.device)[road_mask]
-            node_feature[road_ids, h.SELECTED_ROAD] = sampled[:num_roads_sel].to(
-                torch.float
-            )
-            src_ids = torch.arange(num_src, device=node_feature.device)[src_mask]
-            node_feature[num_roads + 2 * src_ids, h.SELECTED_ROAD] = sampled[
-                num_roads_sel:
-            ].to(torch.float)
+            sampled = torch.multinomial(probs, num_samples=1).squeeze(1)  # indices de routes [0..num_roads-1]
 
-        updated_graph = Data(
-            x=node_feature,
-            edge_index=graph.edge_index,
-            edge_attr=graph.edge_attr,
-            edge_index_routes=graph.edge_index_routes,
-            edge_attr_routes=graph.edge_attr_routes,
-            num_roads=graph.num_roads,
-        )
-        return updated_graph
+            # write back for road nodes
+            road_ids = torch.arange(num_roads, device=device)[road_mask]
+            n_road = road_probs.size(0)
+            x[road_ids, h.SELECTED_ROAD] = sampled[:n_road].to(dtype)
+
+            # write back for SRC nodes
+            if src_mask.numel() > 0:
+                src_ids_global = src_rows_idx[src_mask]
+                x[src_ids_global, h.SELECTED_ROAD] = sampled[n_road:].to(dtype)
+
+        graph.x = x
+        return graph
+
     
     def reset(self):
         """
@@ -662,13 +651,6 @@ class DijkstraAgents(Agents):
         x_update = x.clone()
         x_update[need_nodes, h.SELECTED_ROAD] = next_hop[need_nodes].to(dtype)
 
-        updated_graph = Data(
-            x=x_update,
-            edge_index=graph.edge_index,
-            edge_attr=graph.edge_attr,
-            edge_index_routes=graph.edge_index_routes,
-            edge_attr_routes=graph.edge_attr_routes,
-            num_roads=graph.num_roads,
-        )
+        graph.x = x_update
         self.count += 1
-        return updated_graph
+        return graph

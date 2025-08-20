@@ -54,20 +54,9 @@ class SimulationCoreModel(nn.Module):
         x_full = graph.x.clone()
         x_full[:num_roads] = node_feature
 
-        updated_graph = Data(
-            x=x_full,
-            edge_index=graph.edge_index,
-            edge_attr=graph.edge_attr,
-            edge_index_routes=graph.edge_index_routes,
-            edge_attr_routes=graph.edge_attr_routes,
-            num_roads=num_roads,
-        )
+        graph.x = x_full
         
-        if n != torch.sum(updated_graph.x[:, self.direction_mpnn.NUMBER_OF_AGENT]):
-            pass
-        return updated_graph
-    
-    
+        return graph
     
     def set_time(self, time):
         self.time = time

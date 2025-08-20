@@ -235,7 +235,7 @@ class SimulatorEnv(EnvBase):
         b = e
         last_people = self.simulator.graph.x[:, h.HEAD_FIFO].to(torch.long)
         self.simulator.graph.x = self.simulator.agent.withdraw_agent_from_network(
-            self.simulator.graph.x, self.simulator.graph.edge_index, h
+            self.simulator.graph, h
         )
         e = time.time()
         self.simulator.withdraw_time += e - b

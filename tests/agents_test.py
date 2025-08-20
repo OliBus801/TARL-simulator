@@ -29,11 +29,11 @@ class TestAgent:
         assert torch.all(agents.agent_features[:2, agents.ON_WAY] == 1)
 
         # Agents should not withdraw before their departure time
-        graph.x = agents.withdraw_agent_from_network(graph.x, graph.edge_index, h)
+        graph.x = agents.withdraw_agent_from_network(graph, h)
         assert graph.x[0, h.NUMBER_OF_AGENT] == 2
 
         agents.time = 10
-        graph.x = agents.withdraw_agent_from_network(graph.x, graph.edge_index, h)
+        graph.x = agents.withdraw_agent_from_network(graph, h)
         assert graph.x[0, h.NUMBER_OF_AGENT] == 0
         assert torch.all(agents.agent_features[:2, agents.DONE] == 1)
 

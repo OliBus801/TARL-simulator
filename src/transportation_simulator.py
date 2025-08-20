@@ -191,6 +191,11 @@ class TransportationSimulator:
         edge_index = torch.tensor([from_list, to_list], dtype=torch.long)
         edge_attr = torch.tensor(edge_attr, dtype=torch.float32).view(-1, 1)
 
+        # Compute the adjacency matrix
+        num_nodes = x.size(0)
+        adjacency_matrix = torch.zeros((num_nodes, num_nodes), dtype=torch.bool)
+        adjacency_matrix[edge_index[0], edge_index[1]] = 1
+
         # Creating the PyG Graph object
         self.graph = Data(
             x=x,
@@ -199,6 +204,7 @@ class TransportationSimulator:
             edge_index_routes=edge_index_routes,
             edge_attr_routes=edge_attr_routes,
             num_roads=num_roads,
+            adj_matrix=adjacency_matrix,
         ).to(self.device)
 
         # Print the execution time
@@ -280,7 +286,7 @@ class TransportationSimulator:
         # Withdraw agents
         b = e
         self.graph.x = self.agent.withdraw_agent_from_network(
-            self.graph.x, self.graph.edge_index, h
+            self.graph, h
         )
         e = time.time()
         self.withdraw_time += e-b
