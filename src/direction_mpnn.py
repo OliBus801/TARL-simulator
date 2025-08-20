@@ -2,6 +2,7 @@ import torch
 from torch_geometric.nn import MessagePassing
 from src.feature_helpers import FeatureHelpers
 from torch_scatter import scatter_add, scatter_max
+from typing import Optional
 
 
 class DirectionMPNN(MessagePassing, FeatureHelpers):
@@ -29,7 +30,14 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         self.road_optimality_data = None # To store the delta_travel_time for each road
 
 
-    def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:
+    def message(
+        self,
+        x_i: torch.Tensor,
+        x_j: torch.Tensor,
+        edge_attr: torch.Tensor,
+        critical_number: Optional[torch.Tensor] = None,
+        congestion_constant: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Compute the message to sent to the downstream nodes. It contains only the identifier of 
         the agent and the intersection coefficient.
@@ -126,7 +134,13 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
 
         return chosen_agent
 
-    def update(self, aggr_out: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    def update(
+        self,
+        aggr_out: torch.Tensor,
+        x: torch.Tensor,
+        critical_number: Optional[torch.Tensor] = None,
+        congestion_constant: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Updates the node features thanks to the selected agents.
 
@@ -150,14 +164,19 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
             x[idx, end_queue] = aggr_out
             x[idx, self.Nmax + end_queue] = self.time
 
-            # Compute and store departure time for the inserted agent
-            critical_number = x[idx, self.MAX_FLOW] * x[idx, self.FREE_FLOW_TIME_TRAVEL] / 3600
-            time_congestion = x[idx, self.FREE_FLOW_TIME_TRAVEL] * (
-                x[idx, self.MAX_NUMBER_OF_AGENT] + 10 - critical_number
-            ) / (x[idx, self.MAX_NUMBER_OF_AGENT] + 10 - start_counts)
-            travel_time = torch.max(
-                torch.stack((x[idx, self.FREE_FLOW_TIME_TRAVEL], time_congestion)), dim=0
-            ).values
+            # Use precomputed static factors when available
+            if critical_number is None or congestion_constant is None:
+                critical_number = x[idx, self.MAX_FLOW] * x[idx, self.FREE_FLOW_TIME_TRAVEL] / 3600
+                congestion_constant = x[idx, self.FREE_FLOW_TIME_TRAVEL] * (
+                    x[idx, self.MAX_NUMBER_OF_AGENT] + 10 - critical_number
+                )
+
+            time_congestion = congestion_constant / (
+                x[idx, self.MAX_NUMBER_OF_AGENT] + 10 - start_counts
+            )
+            travel_time = torch.maximum(
+                x[idx, self.FREE_FLOW_TIME_TRAVEL], time_congestion
+            )
             x[idx, self.AGENT_TIME_DEPARTURE.start + end_queue] = self.time + travel_time
 
             # Update the number of agents on the road
@@ -177,7 +196,14 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         self.time = time
 
 
-    def forward(self, x, edge_index, edge_attr):
+    def forward(
+        self,
+        x,
+        edge_index,
+        edge_attr,
+        critical_number: Optional[torch.Tensor] = None,
+        congestion_constant: Optional[torch.Tensor] = None,
+    ):
         """
         Passes first agents on upstream road to their downstream.
 
@@ -190,5 +216,11 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         edge_attr : torch.Tensor
             Edge attribute
         """
-        return self.propagate(edge_index=edge_index, x=x, edge_attr=edge_attr)
+        return self.propagate(
+            edge_index=edge_index,
+            x=x,
+            edge_attr=edge_attr,
+            critical_number=critical_number,
+            congestion_constant=congestion_constant,
+        )
 
