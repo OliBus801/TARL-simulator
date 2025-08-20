@@ -3,8 +3,20 @@ from torch_geometric.nn import MessagePassing
 from src.feature_helpers import FeatureHelpers
 from torch_scatter import scatter_add, scatter_max
 from typing import Optional
+from torch._dynamo import disable
 
 
+@disable
+def _scatter_add(*args, **kwargs):
+    return scatter_add(*args, **kwargs)
+
+
+@disable
+def _scatter_max(*args, **kwargs):
+    return scatter_max(*args, **kwargs)
+
+
+@torch.compile
 class DirectionMPNN(MessagePassing, FeatureHelpers):
     """
     MPNN that communicate the next direction of agents to downstream nodes
@@ -119,13 +131,13 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
             dim_size = int(index.max()) + 1 if index.numel() > 0 else 0
 
         # Compute the total probability per downstream node using scatter_add
-        prob_per_node = scatter_add(inputs[:, PROB], index, dim=0, dim_size=dim_size)
+        prob_per_node = _scatter_add(inputs[:, PROB], index, dim=0, dim_size=dim_size)
 
         # Sample one agent per node using the Gumbel-max trick
         eps = 1e-12
         gumbel_noise = -torch.log(-torch.log(torch.rand_like(inputs[:, PROB] + eps)))
         scores = torch.log(inputs[:, PROB] + eps) + gumbel_noise
-        _, argmax = scatter_max(scores, index, dim=0, dim_size=dim_size)
+        _, argmax = _scatter_max(scores, index, dim=0, dim_size=dim_size)
 
         # Gather the chosen agent id for nodes that received messages
         chosen_agent = torch.zeros(dim_size, device=inputs.device)
