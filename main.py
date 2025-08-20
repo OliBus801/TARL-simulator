@@ -20,6 +20,11 @@ def main(argv=None):
         action="store_true",
         help="Profile the simulation loop with cProfile",
     )
+    parser.add_argument(
+        "--torch-compile",
+        action="store_true",
+        help="Enable torch.compile for MPNN models",
+    )
     args = parser.parse_args(argv)
 
     runner = Runner(RunnerArgs(**vars(args)))

@@ -19,6 +19,7 @@ class RunnerArgs:
     device: str = "cpu"
     output_dir: str = "runs"
     profile: bool = False
+    torch_compile: bool = False
 
 
 class Runner:
@@ -32,7 +33,7 @@ class Runner:
     def setup(self):
         # --- Initialize the simulator and agent based on the algorithm ---
         if self.args.algo in {"dijkstra", "random"}:
-            self.simulator = TransportationSimulator(self.device)
+            self.simulator = TransportationSimulator(self.device, torch_compile=self.args.torch_compile)
             if self.args.algo == "dijkstra":
                 self.agent = DijkstraAgents(self.device)
             else:
@@ -54,6 +55,7 @@ class Runner:
                 timestep_size=self.args.timestep_size,
                 start_time=self.args.start_end_time[0],
                 scenario=self.args.scenario,
+                torch_compile=self.args.torch_compile,
             )
 
             edge_index = self.env.simulator.graph.edge_index
@@ -110,6 +112,7 @@ class Runner:
             timestep_size=self.args.timestep_size,
             start_time=self.args.start_end_time[0],
             scenario=self.args.scenario,
+            torch_compile=self.args.torch_compile,
         )
         eval_env.simulator.agent = self.policy_net
 

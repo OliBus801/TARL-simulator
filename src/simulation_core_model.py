@@ -6,6 +6,7 @@ from torch_geometric.data import Data
 from src.feature_helpers import FeatureHelpers # A Supprimer
 import torch
 
+
 class SimulationCoreModel(nn.Module):
     """
     Simulation Core that captures road dynamics but does not handle insertion or withdrawal agent.
@@ -27,10 +28,13 @@ class SimulationCoreModel(nn.Module):
         The maximal number of agents in a queue.
     """
 
-    def __init__(self, Nmax: int, device: str, time: int):
+    def __init__(self, Nmax: int, device: str, time: int, torch_compile: bool = False):
         super(SimulationCoreModel, self).__init__()
         self.direction_mpnn = DirectionMPNN(Nmax=Nmax, time=time).to(device)
         self.response_mpnn = ResponseMPNN(Nmax=Nmax, time=time).to(device)
+        if torch_compile:
+            self.direction_mpnn = torch.compile(self.direction_mpnn)
+            self.response_mpnn = torch.compile(self.response_mpnn)
         self.time = time
         self.Nmax = Nmax
 
