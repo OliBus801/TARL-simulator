@@ -16,7 +16,6 @@ def _scatter_max(*args, **kwargs):
     return scatter_max(*args, **kwargs)
 
 
-@torch.compile
 class DirectionMPNN(MessagePassing, FeatureHelpers):
     """
     MPNN that communicate the next direction of agents to downstream nodes

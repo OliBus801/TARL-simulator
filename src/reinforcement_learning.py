@@ -104,9 +104,16 @@ class SimulatorEnv(EnvBase):
     A custom environment for reinforcement learning based on the simpson simulator.
     """
 
-    def __init__(self, device: str = 'cpu', timestep_size: int = 1, start_time: int = 0, scenario: str = "Easy"):
+    def __init__(
+        self,
+        device: str = 'cpu',
+        timestep_size: int = 1,
+        start_time: int = 0,
+        scenario: str = "Easy",
+        torch_compile: bool = False,
+    ):
         super().__init__(device=device)
-        self.simulator = TransportationSimulator(device=device)
+        self.simulator = TransportationSimulator(device=device, torch_compile=torch_compile)
         self.simulator.load_network(scenario=scenario)
         self.simulator.config_parameters(timestep_size=timestep_size, start_time=start_time)
         self.to(device)

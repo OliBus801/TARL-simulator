@@ -31,10 +31,11 @@ class TransportationSimulator:
         Timestep for the simulation
     """
 
-    def __init__(self, device: str):
+    def __init__(self, device: str, torch_compile: bool = False):
         self.model_core = None
         self.agent = Agents(device)
         self.device = device
+        self.torch_compile = torch_compile
 
         # The feature are the graph transportation network
         self.graph = None
@@ -267,8 +268,8 @@ class TransportationSimulator:
         
     def configure_core(self):
         """
-        Configure the simulation core for handle road simulation thanks to the 
-        
+        Configure the simulation core for handle road simulation thanks to the
+
 
         Parameters
         ----------
@@ -276,7 +277,9 @@ class TransportationSimulator:
             Relative or absolute path which contains the MATSim configuration
         ----------
         """
-        self.model_core = SimulationCoreModel(self.Nmax, self.device, self.time)
+        self.model_core = SimulationCoreModel(
+            self.Nmax, self.device, self.time, torch_compile=self.torch_compile
+        )
     
     def set_time(self, time):
         """
