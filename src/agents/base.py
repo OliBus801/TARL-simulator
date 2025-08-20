@@ -8,6 +8,7 @@ from datetime import datetime
 import networkx as nx
 from sklearn.neighbors import KDTree
 from src.feature_helpers import AgentFeatureHelpers, FeatureHelpers
+import heapq, math
 
 
 class Agents(AgentFeatureHelpers):
@@ -160,7 +161,7 @@ class Agents(AgentFeatureHelpers):
             for i in range(len(acts) - 1):
                 origin_node = acts[i].get("link")
                 dest_node = acts[i + 1].get("link")
-                
+
                 # Legacy support: infer nearest intersection from coordinates if link is invalid
                 if origin_node not in intersection_indices:
                     ox, oy = acts[i].get("x"), acts[i].get("y")
@@ -514,72 +515,160 @@ class DijkstraAgents(Agents):
         super().__init__(device)
         self.count = 0
         self.refresh_rate = 10 # Number of iterations before refreshing the Dijkstra computing
+    
+    def _build_csr(self, num_nodes: int, edge_index: torch.Tensor, weight: torch.Tensor):
+        """Build CSR adjacency: ptr, nbrs, w for graph (u->v, w)."""
+        device = edge_index.device
+        E = edge_index.size(1)
+        u = edge_index[0]
+        v = edge_index[1]
+        # Sort edges by source for CSR
+        order = torch.argsort(u)
+        u = u[order]; v = v[order]; w = weight[order]
 
+        # ptr: prefix counts
+        counts = torch.bincount(u, minlength=num_nodes)
+        ptr = torch.zeros(num_nodes + 1, dtype=torch.long, device=device)
+        ptr[1:] = torch.cumsum(counts, dim=0)
 
-    def choice(self, graph: Data, h: FeatureHelpers):
+        return ptr, v, w  # CSR arrays
+    
+    def _dijkstra_from_target_on_rev(self, num_nodes: int,
+                                     rev_ptr: torch.Tensor, rev_nbr: torch.Tensor, rev_w: torch.Tensor,
+                                     target: int, device, dtype):
+        """Dijkstra on reversed graph from single target node.
+        Returns: dist (num_nodes,) distances (float) to target along original graph."""
+        INF = torch.tensor(float("inf"), device=device, dtype=dtype)
+        dist = torch.full((num_nodes,), INF, device=device, dtype=dtype)
+        dist[target] = 0.0
+
+        # binary heap: (dist, node)
+        heap = [(0.0, int(target))]
+        # Note: Dijkstra loop is Pythonic but done only per *unique destination*.
+        while heap:
+            du, u = heapq.heappop(heap)
+            if du > float(dist[u]):  # stale
+                continue
+            # for each incoming edge (in original): in reversed CSR, u -> p (predecessor in original)
+            start, end = int(rev_ptr[u]), int(rev_ptr[u+1])
+            nbrs = rev_nbr[start:end]
+            wts  = rev_w[start:end]
+            if nbrs.numel() == 0:
+                continue
+            # relax
+            cand = du + wts
+            # gather current dists of neighbors
+            d_old = dist.index_select(0, nbrs)
+            better = cand < d_old
+            if better.any():
+                idxs = nbrs[better]
+                newd = cand[better]
+                dist[idxs] = newd
+                for nd, vv in zip(newd.tolist(), idxs.tolist()):
+                    heapq.heappush(heap, (nd, vv))
+        return dist
+
+    @torch.no_grad()
+    def choice(self, graph: Data, h):
         """
-        Choose the next direction to take for each agent using Dijkstra.
-
-        Parameters
-        ----------
-        graph : Data
-            Graph of the traffic network
-        h : FeatureHelpers
-            Helpers for selecting index
+        Choose next direction for each agent using efficient per-destination Dijkstra.
+        - No NetworkX; compute weights once; run Dijkstra only for *current* destinations.
         """
+        x = graph.x
+        device = x.device
+        dtype  = x.dtype
+        num_nodes = x.size(0)
 
-        if self.count % self.refresh_rate == 0:
-            # Compute travel time on the routes
-            x_j = graph.x[graph.edge_index[0]]  # Source node
-            critical_number = x_j[:, h.MAX_FLOW] * x_j[:, h.FREE_FLOW_TIME_TRAVEL] / 3600
-            time_congestion = x_j[:, h.FREE_FLOW_TIME_TRAVEL] * (
-                x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number
-            ) / (x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - x_j[:, h.NUMBER_OF_AGENT])
+        # 1) Compute per-edge travel time (weights) once
+        #    time_flow = max(free-flow, congestion-based)
+        x_j = x[graph.edge_index[0]]
+        critical_number = x_j[:, h.MAX_FLOW] * x_j[:, h.FREE_FLOW_TIME_TRAVEL] / 3600
+        denom = (x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - x_j[:, h.NUMBER_OF_AGENT]).clamp_min(1e-6)
+        time_congestion = x_j[:, h.FREE_FLOW_TIME_TRAVEL] * (
+            x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number
+        ) / denom
+        time_flow = torch.maximum(x_j[:, h.FREE_FLOW_TIME_TRAVEL], time_congestion).to(dtype)
 
-            # Travel time = max(free-flow, congested)
-            time_flow = torch.max(
-                torch.stack((x_j[:, h.FREE_FLOW_TIME_TRAVEL], time_congestion)), dim=0
-            ).values
+        # 2) Build CSR for original graph (u->v) and reversed graph (v->u)
+        ptr,  nbr,  w  = self._build_csr(num_nodes, graph.edge_index, time_flow)
+        rev_edge_index = torch.stack((graph.edge_index[1], graph.edge_index[0]), dim=0)
+        rev_ptr, rev_nbr, rev_w = self._build_csr(num_nodes, rev_edge_index, time_flow)
 
-            # Conversion en networkx
-            nx_graph = graph.clone()
-            nx_graph.edge_attr = time_flow
-            nx_graph = to_networkx(nx_graph, edge_attrs=["edge_attr"], to_undirected=False)
+        # 3) Agents & destinations currently at HEAD
+        agents_idx = x[:, h.HEAD_FIFO].to(torch.int64)
+        # Guard: some HEAD_FIFO may be -1 (empty); mask them out
+        valid_agent = agents_idx.ge(0)
+        agents_idx = agents_idx.clamp_min(0)
 
-            # Calcul de tous les chemins minimaux
-            paths = dict(nx.all_pairs_dijkstra_path(nx_graph, weight="edge_attr"))
+        dest_all = self.agent_features[agents_idx, self.DESTINATION].to(torch.int64)
+        dest_all = torch.where(valid_agent, dest_all, torch.full_like(dest_all, -1))
 
-            # Préparation d'un tableau tensorisé des prochaines étapes
-            num_nodes = graph.x.size(0)
-            next_hop_tensor = torch.full((num_nodes, num_nodes), -1, dtype=torch.int64)  # -1 = chemin non défini
+        # Nodes that need a choice (have outgoing edges AND a valid agent)
+        outdeg = (ptr[1:] - ptr[:-1])
+        need_mask = valid_agent & outdeg.gt(0)
+        if not need_mask.any():
+            # Nothing to do
+            updated = graph.clone()
+            self.count += 1
+            return updated
 
-            for src, dst_dict in paths.items():
-                for dst, path in dst_dict.items():
-                    if len(path) >= 2:
-                        next_hop_tensor[src, dst] = path[1]
-                    elif len(path) == 1:
-                        next_hop_tensor[src, dst] = src  # déjà sur place
+        need_nodes = torch.nonzero(need_mask, as_tuple=False).squeeze(1)
+        need_dests = dest_all[need_nodes]
+        # Keep only nodes with valid destinations
+        keep = need_dests.ge(0)
+        need_nodes = need_nodes[keep]
+        need_dests = need_dests[keep]
+        if need_nodes.numel() == 0:
+            updated = graph.clone()
+            self.count += 1
+            return updated
 
-            self.next_hop_tensor = next_hop_tensor.to(graph.x.device)
+        # 4) Group by destination: run ONE Dijkstra per unique destination (on reversed graph)
+        unique_dests, inv = torch.unique(need_dests, return_inverse=True)  # inv maps each need_nodes -> unique_dests idx
 
-        # Get agents origin and destination
-        agents = graph.x[:, h.HEAD_FIFO].to(torch.int64)
-        destinations = self.agent_features[agents, self.DESTINATION].to(torch.int64)
+        # Prepare result buffer (next hop per node, default -1)
+        next_hop = torch.full((num_nodes,), -1, dtype=torch.long, device=device)
 
-        # Met à jour les routes sélectionnées
-        x_update = graph.x.clone()
-        idx = torch.arange(agents.size(0), device=graph.x.device)
-        x_update[:, h.SELECTED_ROAD] = self.next_hop_tensor[idx, destinations]
+        for k, d in enumerate(unique_dests.tolist()):
+            # distances to destination d for every node (along original graph)
+            dist_to_d = self._dijkstra_from_target_on_rev(
+                num_nodes, rev_ptr, rev_nbr, rev_w, target=d, device=device, dtype=dtype
+            )
 
-        # Mise à jour du graphe
+            # nodes in this group
+            group_mask = (inv == k)
+            src_nodes = need_nodes[group_mask]
+            if src_nodes.numel() == 0:
+                continue
+
+            # For every edge u->v, compute total cost = w(u->v) + dist_to_d[v]
+            # Vectorized over all edges, then we pick argmin per *u* we care about.
+            cost_edges = w + dist_to_d.index_select(0, nbr)
+
+            # We’ll pick, for each src u in src_nodes, the neighbor with minimal cost.
+            # Use CSR slices [ptr[u]:ptr[u+1]) to get edges of u.
+            # (Small Python loop over the *subset* src_nodes only; costs/gathers are tensor ops.)
+            for u in src_nodes.tolist():
+                s, e = int(ptr[u]), int(ptr[u+1])
+                if e <= s:
+                    continue
+                # argmin on this small slice
+                sl = cost_edges[s:e]
+                j  = torch.argmin(sl)               # local argmin
+                v  = nbr[s + int(j)].item()         # next node
+                next_hop[u] = v
+
+        # 5) Write SELECTED_ROAD only for the nodes we processed
+        x_update = x.clone()
+        x_update[need_nodes, h.SELECTED_ROAD] = next_hop[need_nodes].to(dtype)
+
         updated_graph = Data(
             x=x_update,
             edge_index=graph.edge_index,
             edge_attr=graph.edge_attr,
             edge_index_routes=graph.edge_index_routes,
             edge_attr_routes=graph.edge_attr_routes,
-            num_roads=graph.num_roads
+            num_roads=graph.num_roads,
         )
         self.count += 1
         return updated_graph
-
