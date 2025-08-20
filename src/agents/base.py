@@ -461,16 +461,12 @@ class Agents(AgentFeatureHelpers):
         if road_probs.numel() > 0:
             road_probs = road_probs / road_probs.sum(dim=1, keepdim=True)
 
-        # ----- SRC -> ROADS (rows = num_roads, num_roads+2, ...) -----
-        # Hypothèse: nodes après les routes alternent SRC, DEST => SRC indices = num_roads + 2*k
+        # ----- SRC -> ROADS using precomputed normalized probabilities -----
+        src_adj = graph.src_adj.to(dtype) if hasattr(graph, "src_adj") else None
         src_rows_idx = torch.arange(num_roads, total_nodes, 2, device=device)
-        if src_rows_idx.numel() > 0:
-            src_adj  = adj.index_select(0, src_rows_idx)[:, :num_roads]
-            src_out  = src_adj.sum(dim=1)
-            src_mask = src_out > 0
+        if src_adj is not None and src_adj.numel() > 0:
+            src_mask = src_adj.sum(dim=1) > 0
             src_probs = src_adj[src_mask]
-            if src_probs.numel() > 0:
-                src_probs = src_probs / src_probs.sum(dim=1, keepdim=True)
         else:
             src_mask = torch.empty(0, dtype=torch.bool, device=device)
             src_probs = torch.empty(0, num_roads, dtype=dtype, device=device)
