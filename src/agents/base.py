@@ -6,6 +6,7 @@ from torch_geometric.utils import to_dense_adj, to_networkx
 from torch_geometric.data import Data
 from datetime import datetime
 import networkx as nx
+from sklearn.neighbors import KDTree
 from src.feature_helpers import AgentFeatureHelpers, FeatureHelpers
 
 
@@ -117,9 +118,14 @@ class Agents(AgentFeatureHelpers):
 
         # Map intersections -> (SRC, DEST) indices as created in config_network
         intersection_indices = {}
-        for idx, inter in enumerate(sorted(intersections)):
+        sorted_intersections = sorted(intersections)
+        for idx, inter in enumerate(sorted_intersections):
             src_idx = num_links + 2 * idx
             intersection_indices[inter] = (src_idx, src_idx + 1)
+
+        # Build a KDTree over intersection node coordinates for legacy scenarios
+        intersection_coords = np.array([node_positions[inter] for inter in sorted_intersections])
+        kdtree = KDTree(intersection_coords)
 
         # Creating dummy agent
         dummy_row = [0.0, 0.0, 25 * 3600, 0.0, 20.0, 0.0, 0.0, 0.0, 0.0]
@@ -154,6 +160,24 @@ class Agents(AgentFeatureHelpers):
             for i in range(len(acts) - 1):
                 origin_node = acts[i].get("link")
                 dest_node = acts[i + 1].get("link")
+                
+                # Legacy support: infer nearest intersection from coordinates if link is invalid
+                if origin_node not in intersection_indices:
+                    ox, oy = acts[i].get("x"), acts[i].get("y")
+                    if ox is not None and oy is not None:
+                        try:
+                            idx = kdtree.query([[float(ox), float(oy)]], return_distance=False)[0][0]
+                            origin_node = sorted_intersections[idx]
+                        except Exception:
+                            pass
+                if dest_node not in intersection_indices:
+                    dx, dy = acts[i + 1].get("x"), acts[i + 1].get("y")
+                    if dx is not None and dy is not None:
+                        try:
+                            idx = kdtree.query([[float(dx), float(dy)]], return_distance=False)[0][0]
+                            dest_node = sorted_intersections[idx]
+                        except Exception:
+                            pass
                 try:
                     if origin_node in intersection_indices and dest_node in intersection_indices:
                         src_idx = intersection_indices[origin_node][0]
