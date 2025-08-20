@@ -348,30 +348,49 @@ class Agents(AgentFeatureHelpers):
         num_roads = int((x[:, h.ROAD_INDEX] >= 0).sum().item())
         withdrawn_mask = torch.zeros(num_roads, dtype=torch.bool, device=x.device)
 
-
         with torch.no_grad():
-            while True:
-                candidate_agent = x[:, h.HEAD_FIFO].to(torch.long)
-                roads = x[:, h.ROAD_INDEX].to(torch.long)
-                dest = self.agent_features[candidate_agent, self.DESTINATION].to(torch.long)
+            roads = x[:, h.ROAD_INDEX].to(torch.long)
+            agent_ids = x[:, h.AGENT_POSITION].to(torch.long)
+            dest = self.agent_features[agent_ids, self.DESTINATION].to(torch.long)
 
-                # Check if an edge exists from each road to the candidate's destination
-                connectivity = adj[roads, dest] > 0
-                mask = (connectivity
-                        & (x[:, h.NUMBER_OF_AGENT] != 0)
-                        & (x[:, h.HEAD_FIFO_DEPARTURE_TIME] <= self.time))
+            # Determine connectivity and departure eligibility for each slot
+            connectivity = adj[roads.unsqueeze(1), dest] > 0
+            depart_ok = x[:, h.AGENT_TIME_DEPARTURE] <= self.time
+            active_slots = (
+                torch.arange(h.Nmax, device=x.device)
+                < x[:, h.NUMBER_OF_AGENT].unsqueeze(1)
+            )
+            eligible = connectivity & depart_ok & active_slots
 
-                if not torch.any(mask[:num_roads]):
-                    break
+            # Identify consecutive eligible agents starting from head
+            cum_eligible = torch.cumprod(eligible.long(), dim=1).bool()
+            withdraw_counts = cum_eligible.sum(dim=1)
+            withdrawn_mask = withdraw_counts[:num_roads] > 0
 
-                withdrawn_mask |= mask[:num_roads]  # Update the mask for roads only
-                agents_to_withdraw = candidate_agent[mask]
+            if withdraw_counts.any():
+                agents_to_withdraw = agent_ids[cum_eligible]
 
-                # Withdraw these agents from the network
-                x[mask, : h.MAX_NUMBER_OF_AGENT - 1] = x[mask, 1 : h.MAX_NUMBER_OF_AGENT]
-                x[mask, h.NUMBER_OF_AGENT] -= 1
+                idx = torch.arange(h.Nmax, device=x.device)
+                shift_idx = idx.unsqueeze(0) + withdraw_counts.unsqueeze(1)
+                valid = shift_idx < h.Nmax
 
-                # Update agent features for withdrawn agents
+                pos = x[:, h.AGENT_POSITION]
+                arr = x[:, h.AGENT_TIME_ARRIVAL]
+                dep = x[:, h.AGENT_TIME_DEPARTURE]
+
+                new_pos = pos.gather(1, shift_idx.clamp(max=h.Nmax - 1))
+                new_arr = arr.gather(1, shift_idx.clamp(max=h.Nmax - 1))
+                new_dep = dep.gather(1, shift_idx.clamp(max=h.Nmax - 1))
+
+                new_pos[~valid] = 0
+                new_arr[~valid] = 0
+                new_dep[~valid] = 0
+
+                x[:, h.AGENT_POSITION] = new_pos
+                x[:, h.AGENT_TIME_ARRIVAL] = new_arr
+                x[:, h.AGENT_TIME_DEPARTURE] = new_dep
+                x[:, h.NUMBER_OF_AGENT] -= withdraw_counts
+
                 self.agent_features[agents_to_withdraw, self.DONE] = 1
                 self.agent_features[agents_to_withdraw, self.ON_WAY] = 0
                 self.agent_features[agents_to_withdraw, self.ARRIVAL_TIME] = self.time
