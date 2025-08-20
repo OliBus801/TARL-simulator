@@ -202,6 +202,12 @@ class TransportationSimulator:
         src_deg = src_adj.sum(dim=1, keepdim=True)
         src_adj = torch.where(src_deg > 0, src_adj / src_deg, torch.zeros_like(src_adj))
 
+        # Pre-compute static congestion factors
+        critical_number = x[:, h.MAX_FLOW] * x[:, h.FREE_FLOW_TIME_TRAVEL] / 3600
+        congestion_constant = x[:, h.FREE_FLOW_TIME_TRAVEL] * (
+            x[:, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number
+        )
+
         # Creating the PyG Graph object
         self.graph = Data(
             x=x,
@@ -212,6 +218,8 @@ class TransportationSimulator:
             num_roads=num_roads,
             adj_matrix=adjacency_matrix,
             src_adj=src_adj,
+            critical_number=critical_number,
+            congestion_constant=congestion_constant,
         ).to(self.device)
 
         # Print the execution time

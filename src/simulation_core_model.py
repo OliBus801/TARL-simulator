@@ -47,9 +47,33 @@ class SimulationCoreModel(nn.Module):
         n = torch.sum(graph.x[:, self.direction_mpnn.NUMBER_OF_AGENT])
         num_roads = graph.num_roads
         x_roads = graph.x[:num_roads]
+
+        # Retrieve or compute pre-computed static factors
+        if hasattr(graph, "critical_number") and hasattr(graph, "congestion_constant"):
+            critical_number = graph.critical_number[:num_roads]
+            congestion_constant = graph.congestion_constant[:num_roads]
+        else:
+            h = self.direction_mpnn
+            critical_number = (
+                graph.x[:num_roads, h.MAX_FLOW]
+                * graph.x[:num_roads, h.FREE_FLOW_TIME_TRAVEL]
+                / 3600
+            )
+            congestion_constant = graph.x[
+                :num_roads, h.FREE_FLOW_TIME_TRAVEL
+            ] * (graph.x[:num_roads, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number)
+
         # Use only the road graph for message passing
-        node_feature = self.direction_mpnn(x_roads, graph.edge_index_routes, graph.edge_attr_routes)
-        node_feature = self.response_mpnn(node_feature, graph.edge_index_routes, graph.edge_attr_routes)
+        node_feature = self.direction_mpnn(
+            x_roads,
+            graph.edge_index_routes,
+            graph.edge_attr_routes,
+            critical_number=critical_number,
+            congestion_constant=congestion_constant,
+        )
+        node_feature = self.response_mpnn(
+            node_feature, graph.edge_index_routes, graph.edge_attr_routes
+        )
 
         x_full = graph.x.clone()
         x_full[:num_roads] = node_feature
