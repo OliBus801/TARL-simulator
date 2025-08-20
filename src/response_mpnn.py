@@ -2,6 +2,8 @@ from torch_geometric.nn import MessagePassing
 from src.feature_helpers import FeatureHelpers
 import torch
 
+
+@torch.compile
 class ResponseMPNN(MessagePassing):
     """
     MPNN that communicate which agent has been accepted previously.
