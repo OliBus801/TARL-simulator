@@ -44,7 +44,6 @@ class SimulationCoreModel(nn.Module):
             The graph representing the traffic network.
         """
         # Forward pass of the simulation core model.
-        n = torch.sum(graph.x[:, self.direction_mpnn.NUMBER_OF_AGENT])
         num_roads = graph.num_roads
         x_roads = graph.x[:num_roads]
 
@@ -75,10 +74,7 @@ class SimulationCoreModel(nn.Module):
             node_feature, graph.edge_index_routes, graph.edge_attr_routes
         )
 
-        x_full = graph.x.clone()
-        x_full[:num_roads] = node_feature
-
-        graph.x = x_full
+        graph.x[:num_roads] = node_feature
         
         return graph
     
