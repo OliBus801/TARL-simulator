@@ -196,6 +196,12 @@ class TransportationSimulator:
         adjacency_matrix = torch.zeros((num_nodes, num_nodes), dtype=torch.bool)
         adjacency_matrix[edge_index[0], edge_index[1]] = 1
 
+        # Pre-compute normalized adjacency for SRC nodes -> roads
+        src_rows_idx = torch.arange(num_roads, num_nodes, 2, dtype=torch.long)
+        src_adj = adjacency_matrix[src_rows_idx, :num_roads].to(torch.float32)
+        src_deg = src_adj.sum(dim=1, keepdim=True)
+        src_adj = torch.where(src_deg > 0, src_adj / src_deg, torch.zeros_like(src_adj))
+
         # Creating the PyG Graph object
         self.graph = Data(
             x=x,
@@ -205,6 +211,7 @@ class TransportationSimulator:
             edge_attr_routes=edge_attr_routes,
             num_roads=num_roads,
             adj_matrix=adjacency_matrix,
+            src_adj=src_adj,
         ).to(self.device)
 
         # Print the execution time
