@@ -258,21 +258,49 @@ class Agents(AgentFeatureHelpers):
         origins = self.agent_features[ready, self.ORIGIN].to(torch.long)
         road_idx = x[origins, h.SELECTED_ROAD].to(torch.long)
 
-        capacity_ok = (
-            x[road_idx, h.NUMBER_OF_AGENT]
-            < x[road_idx, h.MAX_NUMBER_OF_AGENT] - h.CONGESTION_FILE
-        )
+        # Compute remaining capacity on each selected road
+        remaining_cap = (
+            x[road_idx, h.MAX_NUMBER_OF_AGENT]
+            - h.CONGESTION_FILE
+            - x[road_idx, h.NUMBER_OF_AGENT]
+        ).to(torch.long)
+        capacity_ok = remaining_cap > 0
         if not torch.any(capacity_ok):
             return x
 
         agent_idx = torch.nonzero(ready, as_tuple=False).squeeze(1)[capacity_ok]
         road_idx = road_idx[capacity_ok]
+        remaining_cap = remaining_cap[capacity_ok]
 
         order = torch.argsort(road_idx)
         road_sorted = road_idx[order]
         agent_sorted = agent_idx[order]
-        start_counts = x[road_sorted, h.NUMBER_OF_AGENT].to(torch.long)
+        cap_sorted = remaining_cap[order]
+
         unique_roads, counts = torch.unique_consecutive(road_sorted, return_counts=True)
+        start_counts = x[road_sorted, h.NUMBER_OF_AGENT].to(torch.long)
+        # Capacity available per unique road (same value repeated within group)
+        cap_per_road = cap_sorted[torch.cumsum(counts, 0) - counts]
+        allowed_counts = torch.minimum(counts, cap_per_road)
+
+        # Mask to keep only the agents that can actually enter
+        mask = torch.zeros_like(road_sorted, dtype=torch.bool)
+        idx = 0
+        for c, a in zip(counts.tolist(), allowed_counts.tolist()):
+            mask[idx : idx + a] = True
+            idx += c
+
+        road_sorted = road_sorted[mask]
+        agent_sorted = agent_sorted[mask]
+        start_counts = start_counts[mask]
+
+        valid = allowed_counts > 0
+        unique_roads = unique_roads[valid]
+        counts = allowed_counts[valid]
+
+        if agent_sorted.numel() == 0:
+            return x
+
         offsets = torch.arange(road_sorted.size(0), device=x.device) - torch.repeat_interleave(
             torch.cat([torch.tensor([0], device=x.device), counts.cumsum(0)[:-1]], dim=0),
             counts,
