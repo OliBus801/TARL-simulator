@@ -18,6 +18,7 @@ class RunnerArgs:
     seed: int = 0
     device: str = "cpu"
     output_dir: str = "runs"
+    profile: bool = False
 
 
 class Runner:
@@ -131,7 +132,15 @@ class Runner:
 
         if self.args.algo in {"dijkstra", "random"}:
             from .algorithms.base_runner import run_episode
-            run_episode(self.simulator, self.agent, steps=n_timesteps)
+            run_episode(
+                self.simulator,
+                self.agent,
+                steps=n_timesteps,
+                profile=self.args.profile,
+                profile_output=(
+                    Path(self.args.output_dir) / "profile.txt" if self.args.profile else None
+                ),
+            )
 
             # Evaluate metrics
             mask = self.agent.agent_features[:, self.agent.DONE] == 1
