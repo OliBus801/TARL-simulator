@@ -98,9 +98,6 @@ class ResponseMPNN(MessagePassing):
         x_updated:
             The message that contains in the first column the index of the selected agent
         """
-        # Clone the input to avoid in-place modification
-        x_updated = x.clone()
-
         # Mask the agents that have been transferred
         mask_update = (aggr_out > 0).squeeze(1)
 
@@ -116,16 +113,17 @@ class ResponseMPNN(MessagePassing):
         AGENT_TIME_ARRIVAL_DOWNSTREAM = slice(self.AGENT_TIME_ARRIVAL.start + 1, self.AGENT_TIME_ARRIVAL.stop)
         AGENT_TIME_DEPARTURE_DOWNSTREAM = slice(self.AGENT_TIME_DEPARTURE.start + 1, self.AGENT_TIME_DEPARTURE.stop)
 
-        # Update the position of the agent
-        x_updated[mask_update, AGENT_POSITION_UPSTREAM] = x[mask_update, AGENT_POSITION_DOWNSTREAM]  # Update the position of the agent
-        x_updated[mask_update, AGENT_TIME_ARRIVAL_UPSTREAM] = x[mask_update, AGENT_TIME_ARRIVAL_DOWNSTREAM]  # Update the time of arrival of the agent
-        x_updated[mask_update, AGENT_TIME_DEPARTURE_UPSTREAM] = x[mask_update, AGENT_TIME_DEPARTURE_DOWNSTREAM]  # Update the time of departure of the agent
-        x_updated[mask_update, self.NUMBER_OF_AGENT] = x[mask_update, self.NUMBER_OF_AGENT] - 1  # Update the number of agents on the road
+        # Update the position of the agent without cloning the full tensor
+        with torch.no_grad():
+            x[mask_update, AGENT_POSITION_UPSTREAM] = x[mask_update, AGENT_POSITION_DOWNSTREAM]
+            x[mask_update, AGENT_TIME_ARRIVAL_UPSTREAM] = x[mask_update, AGENT_TIME_ARRIVAL_DOWNSTREAM]
+            x[mask_update, AGENT_TIME_DEPARTURE_UPSTREAM] = x[mask_update, AGENT_TIME_DEPARTURE_DOWNSTREAM]
+            x[mask_update, self.NUMBER_OF_AGENT] = x[mask_update, self.NUMBER_OF_AGENT] - 1
 
         # Store the update mask and current time in the history
         self.update_history.append((self.time, mask_update.clone()))
 
-        return x_updated
+        return x
 
 
     def set_time(self, time: int):

@@ -16,12 +16,15 @@ class TestAgent:
         x[0, h.ROAD_INDEX] = 0
         x[0, h.FREE_FLOW_TIME_TRAVEL] = 10
         edge_index = torch.tensor([[1, 0], [0, 0]])  # SRC(1) -> road 0, road 0 -> DEST(0)
+        adj = torch.zeros((x.size(0), x.size(0)), dtype=torch.bool)
+        adj[edge_index[0], edge_index[1]] = 1
         graph = Data(
             x=x,
             edge_index=edge_index,
             edge_index_routes=torch.empty((2, 0), dtype=torch.long),
             edge_attr_routes=torch.empty((0, 1)),
             num_roads=1,
+            adj_matrix=adj,
         )
         agents.time = 0
         graph.x = agents.insert_agent_into_network(graph, h)
@@ -53,12 +56,15 @@ class TestAgent:
         x[0, h.ROAD_INDEX] = 0
         x[0, h.FREE_FLOW_TIME_TRAVEL] = 10
         edge_index = torch.tensor([[1, 0], [0, 0]])
+        adj = torch.zeros((x.size(0), x.size(0)), dtype=torch.bool)
+        adj[edge_index[0], edge_index[1]] = 1
         graph = Data(
             x=x,
             edge_index=edge_index,
             edge_index_routes=torch.empty((2, 0), dtype=torch.long),
             edge_attr_routes=torch.empty((0, 1)),
             num_roads=1,
+            adj_matrix=adj,
         )
         agent.time = 0
         graph.x = agent.insert_agent_into_network(graph, h)

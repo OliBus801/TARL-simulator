@@ -2,13 +2,11 @@ import numpy as np
 from lxml import etree
 import torch
 import os
-from torch_geometric.utils import to_dense_adj, to_networkx
 from torch_geometric.data import Data
 from datetime import datetime
-import networkx as nx
 from sklearn.neighbors import KDTree
 from src.feature_helpers import AgentFeatureHelpers, FeatureHelpers
-import heapq, math
+import heapq
 
 
 class Agents(AgentFeatureHelpers):
@@ -344,7 +342,6 @@ class Agents(AgentFeatureHelpers):
         """
 
         x = graph.x
-        x_update = x.clone()
         adj = graph.adj_matrix
 
         # Only keep a withdrawal mask for the road nodes; intersection are ignored
@@ -352,34 +349,36 @@ class Agents(AgentFeatureHelpers):
         withdrawn_mask = torch.zeros(num_roads, dtype=torch.bool, device=x.device)
 
 
-        while True:
-            candidate_agent = x_update[:, h.HEAD_FIFO].to(torch.long)
-            roads = x_update[:, h.ROAD_INDEX].to(torch.long)
-            dest = self.agent_features[candidate_agent, self.DESTINATION].to(torch.long)
+        with torch.no_grad():
+            while True:
+                candidate_agent = x[:, h.HEAD_FIFO].to(torch.long)
+                roads = x[:, h.ROAD_INDEX].to(torch.long)
+                dest = self.agent_features[candidate_agent, self.DESTINATION].to(torch.long)
 
-            # Check if an edge exists from each road to the candidate's destination
-            connectivity = adj[roads, dest] > 0
-            mask = (connectivity 
-                    & (x_update[:, h.NUMBER_OF_AGENT] != 0)
-                    & (x_update[:, h.HEAD_FIFO_DEPARTURE_TIME] <= self.time))
+                # Check if an edge exists from each road to the candidate's destination
+                connectivity = adj[roads, dest] > 0
+                mask = (connectivity
+                        & (x[:, h.NUMBER_OF_AGENT] != 0)
+                        & (x[:, h.HEAD_FIFO_DEPARTURE_TIME] <= self.time))
 
-            if not torch.any(mask[:num_roads]):
-                break
+                if not torch.any(mask[:num_roads]):
+                    break
 
-            withdrawn_mask |= mask[:num_roads]  # Update the mask for roads only
-            agents_to_withdraw = candidate_agent[mask]
+                withdrawn_mask |= mask[:num_roads]  # Update the mask for roads only
+                agents_to_withdraw = candidate_agent[mask]
 
-            # Withdraw these agents from the network
-            x_update[mask, : h.MAX_NUMBER_OF_AGENT - 1] = x_update[mask, 1 : h.MAX_NUMBER_OF_AGENT]
-            x_update[mask, h.NUMBER_OF_AGENT] -= 1
+                # Withdraw these agents from the network
+                x[mask, : h.MAX_NUMBER_OF_AGENT - 1] = x[mask, 1 : h.MAX_NUMBER_OF_AGENT]
+                x[mask, h.NUMBER_OF_AGENT] -= 1
 
-            # Update agent features for withdrawn agents
-            self.agent_features[agents_to_withdraw, self.DONE] = 1
-            self.agent_features[agents_to_withdraw, self.ON_WAY] = 0
-            self.agent_features[agents_to_withdraw, self.ARRIVAL_TIME] = self.time
+                # Update agent features for withdrawn agents
+                self.agent_features[agents_to_withdraw, self.DONE] = 1
+                self.agent_features[agents_to_withdraw, self.ON_WAY] = 0
+                self.agent_features[agents_to_withdraw, self.ARRIVAL_TIME] = self.time
 
         self.withdraw_history.append((self.time, withdrawn_mask.clone()))
-        return x_update
+        return x
+
 
 
     def save(self, file_path: str) -> None:
@@ -597,9 +596,8 @@ class DijkstraAgents(Agents):
         need_mask = valid_agent & outdeg.gt(0)
         if not need_mask.any():
             # Nothing to do
-            updated = graph.clone()
             self.count += 1
-            return updated
+            return graph
 
         need_nodes = torch.nonzero(need_mask, as_tuple=False).squeeze(1)
         need_dests = dest_all[need_nodes]
@@ -608,9 +606,8 @@ class DijkstraAgents(Agents):
         need_nodes = need_nodes[keep]
         need_dests = need_dests[keep]
         if need_nodes.numel() == 0:
-            updated = graph.clone()
             self.count += 1
-            return updated
+            return graph
 
         # 4) Group by destination: run ONE Dijkstra per unique destination (on reversed graph)
         unique_dests, inv = torch.unique(need_dests, return_inverse=True)  # inv maps each need_nodes -> unique_dests idx
@@ -648,9 +645,7 @@ class DijkstraAgents(Agents):
                 next_hop[u] = v
 
         # 5) Write SELECTED_ROAD only for the nodes we processed
-        x_update = x.clone()
-        x_update[need_nodes, h.SELECTED_ROAD] = next_hop[need_nodes].to(dtype)
+        graph.x[need_nodes, h.SELECTED_ROAD] = next_hop[need_nodes].to(dtype)
 
-        graph.x = x_update
         self.count += 1
         return graph
