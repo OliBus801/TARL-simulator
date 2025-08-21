@@ -1,6 +1,19 @@
 import torch
 from torch_geometric.nn import MessagePassing
 from src.feature_helpers import FeatureHelpers
+from torch_scatter import scatter_add, scatter_max
+from typing import Optional
+from torch._dynamo import disable
+
+
+@disable
+def _scatter_add(*args, **kwargs):
+    return scatter_add(*args, **kwargs)
+
+
+@disable
+def _scatter_max(*args, **kwargs):
+    return scatter_max(*args, **kwargs)
 
 
 class DirectionMPNN(MessagePassing, FeatureHelpers):
@@ -28,7 +41,14 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         self.road_optimality_data = None # To store the delta_travel_time for each road
 
 
-    def message(self, x_i: torch.Tensor, x_j: torch.Tensor, edge_attr: torch.Tensor) -> torch.Tensor:
+    def message(
+        self,
+        x_i: torch.Tensor,
+        x_j: torch.Tensor,
+        edge_attr: torch.Tensor,
+        critical_number: Optional[torch.Tensor] = None,
+        congestion_constant: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Compute the message to sent to the downstream nodes. It contains only the identifier of 
         the agent and the intersection coefficient.
@@ -50,20 +70,15 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         """
         
         
-        
-        # Compute the time departure
-        critical_number = x_j[:, self.MAX_FLOW] * x_j[:, self.FREE_FLOW_TIME_TRAVEL] /3600
-        time_congestion = x_j[:, self.FREE_FLOW_TIME_TRAVEL] * (x_j[:, self.MAX_NUMBER_OF_AGENT]+10 - critical_number) /(x_j[:, self.MAX_NUMBER_OF_AGENT]+10 - x_j[:, self.HEAD_FIFO_CONG])
-        
-        # Time departure
-        time_arrival = x_j[:, self.HEAD_FIFO_TIME]
-        time_departure = time_arrival.unsqueeze(1) + torch.max(torch.stack((x_j[:, self.FREE_FLOW_TIME_TRAVEL], time_congestion)), dim=0).values.unsqueeze(1)
+        # Time departure pre-computed at agent insertion
+        time_departure = x_j[:, self.HEAD_FIFO_DEPARTURE_TIME].unsqueeze(1)
+        time_arrival = x_j[:, self.HEAD_FIFO_ARRIVAL_TIME]
 
         # Agent identifier
         agent_id = x_j[:, self.HEAD_FIFO].unsqueeze(1)
 
-        # Compute the probability to take the road
-        mask = torch.logical_and(time_departure < self.time,  # Check if the departure time is before the actual time
+        # Compute mask : Can we send the agent on the downstream node ?
+        mask = torch.logical_and(time_departure <= self.time,  # Check if we reached the departure time
                                  (x_i[:, self.NUMBER_OF_AGENT] < x_i[:, self.MAX_NUMBER_OF_AGENT] - self.CONGESTION_FILE).unsqueeze(1)) # Check if the fifo is not full
         mask = torch.logical_and(mask, (x_j[:, self.SELECTED_ROAD] == x_i[:, self.ROAD_INDEX]).unsqueeze(1)) # Check if the direction is the road
         mask = torch.logical_and(mask, (x_j[:, self.NUMBER_OF_AGENT] > 0).unsqueeze(1))# Check if there is agent inside the queue
@@ -73,10 +88,11 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         submask = torch.logical_and(submask, x_j[:, self.MAX_NUMBER_OF_AGENT] - x_j[:, self.NUMBER_OF_AGENT] <= x_i[:, self.MAX_NUMBER_OF_AGENT] - x_i[:, self.NUMBER_OF_AGENT])
         submask = torch.logical_and(submask, (x_j[:, self.SELECTED_ROAD] == x_i[:, self.ROAD_INDEX]))
         mask = torch.logical_or(mask, submask.unsqueeze(1))  # If there is some 
-        prob = edge_attr* mask.float()
+        prob = edge_attr * mask.float()
 
         # Compute the road optimality data
-        delta_travel_time = torch.clamp(time_congestion - x_j[:, self.FREE_FLOW_TIME_TRAVEL], min=0)
+        travel_time = time_departure.squeeze(1) - time_arrival
+        delta_travel_time = torch.clamp(travel_time - x_j[:, self.FREE_FLOW_TIME_TRAVEL], min=0)
         self.road_optimality_data = {"delta_travel_time": delta_travel_time}
 
 
@@ -109,58 +125,33 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         AGENT_ID = 0
         PROB = 1
 
-        # Sort messages by index
-        sorted_index, sorted_idx = torch.sort(index)
-        inputs_sorted = inputs[sorted_idx]
+        # Ensure we know the number of nodes to aggregate over
+        if dim_size is None:
+            dim_size = int(index.max()) + 1 if index.numel() > 0 else 0
 
-        # We compute the cumulative sum of all probabilities
-        cum_sum = torch.cumsum(inputs_sorted[:, PROB], dim=0)
+        # Compute the total probability per downstream node using scatter_add
+        prob_per_node = _scatter_add(inputs[:, PROB], index, dim=0, dim_size=dim_size)
 
-        # Find the first index of each group
-        is_first = torch.cat([
-            torch.tensor([True], device=sorted_index.device),  # premier élément est début de groupe
-            sorted_index[1:] != sorted_index[:-1]
-        ])
-        first_indices = torch.nonzero(is_first).squeeze(1)
+        # Sample one agent per node using the Gumbel-max trick
+        eps = 1e-12
+        gumbel_noise = -torch.log(-torch.log(torch.rand_like(inputs[:, PROB] + eps)))
+        scores = torch.log(inputs[:, PROB] + eps) + gumbel_noise
+        _, argmax = _scatter_max(scores, index, dim=0, dim_size=dim_size)
 
-        # Find the last index of each group
-        if_last = torch.cat([
-            sorted_index[:-1] != sorted_index[1:],  # dernier élément est fin de groupe
-            torch.tensor([True], device=sorted_index.device)
-        ])
-        last_indices = torch.nonzero(if_last).squeeze(1)
-
-        # Compute the sum
-        buffer = cum_sum[last_indices]
-        last_sum = torch.zeros_like(buffer)
-        last_sum[1:] = buffer[:-1]
-        cum_sum = cum_sum - last_sum[sorted_index]  
-
-        # Normalize the sum
-        sum_over_group = cum_sum[last_indices]
-        mask = ~torch.isclose(sum_over_group, torch.tensor(0.0, device=sum_over_group.device), atol=1e-5)
-        mask = mask[sorted_index]
-        cum_sum  = torch.where(mask, cum_sum / sum_over_group[sorted_index], cum_sum)
-
-        # Randomly select an element in the group
-        r = torch.rand_like(sum_over_group)
-        r = r[sorted_index]
-        r = torch.where(cum_sum > r, 1, 0)
-
-        r = torch.cumsum(r, dim=0)
-        r_sum = torch.zeros_like(sum_over_group)
-        r_sum[1:] = r[last_indices[:-1]]
-        r = r - r_sum[sorted_index]
-        selected_indices = torch.where(r == 1, 1, 0)
-
-        # Compute the selected messages
-        chosen_agent = torch.zeros_like(first_indices, dtype=torch.float)
-        selected_indices = torch.nonzero(r == 1, as_tuple=False).squeeze()
-        chosen_agent[sorted_index[selected_indices]] = inputs_sorted[selected_indices, AGENT_ID]
+        # Gather the chosen agent id for nodes that received messages
+        chosen_agent = torch.zeros(dim_size, device=inputs.device)
+        mask = prob_per_node > 0
+        chosen_agent[mask] = inputs[argmax[mask], AGENT_ID]
 
         return chosen_agent
 
-    def update(self, aggr_out: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    def update(
+        self,
+        aggr_out: torch.Tensor,
+        x: torch.Tensor,
+        critical_number: Optional[torch.Tensor] = None,
+        congestion_constant: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Updates the node features thanks to the selected agents.
 
@@ -176,20 +167,33 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         x_updated : torch.Tensor
             The updated node features
         """
-        x_updated = x.clone()
+        # Perform in-place updates without tracking gradients
+        with torch.no_grad():
+            end_queue = x[:, self.NUMBER_OF_AGENT].to(torch.int64)
+            start_counts = x[:, self.NUMBER_OF_AGENT]
+            idx = torch.arange(x.size(0), device=x.device)
+            x[idx, end_queue] = aggr_out
+            x[idx, self.Nmax + end_queue] = self.time
 
-        # Compute the number of agents
-        end_queue = (x_updated[:, self.NUMBER_OF_AGENT]).to(torch.int64)
-        idx = torch.arange(x.size(0), device=x.device)
-        x_updated[idx, end_queue] = aggr_out
-        x_updated[idx, self.Nmax + end_queue] = self.time
-        x_updated[idx, 2*self.Nmax + end_queue] = x_updated[idx, self.NUMBER_OF_AGENT]
+            # Use precomputed static factors when available
+            if critical_number is None or congestion_constant is None:
+                critical_number = x[idx, self.MAX_FLOW] * x[idx, self.FREE_FLOW_TIME_TRAVEL] / 3600
+                congestion_constant = x[idx, self.FREE_FLOW_TIME_TRAVEL] * (
+                    x[idx, self.MAX_NUMBER_OF_AGENT] + 10 - critical_number
+                )
 
+            time_congestion = congestion_constant / (
+                x[idx, self.MAX_NUMBER_OF_AGENT] + 10 - start_counts
+            )
+            travel_time = torch.maximum(
+                x[idx, self.FREE_FLOW_TIME_TRAVEL], time_congestion
+            )
+            x[idx, self.AGENT_TIME_DEPARTURE.start + end_queue] = self.time + travel_time
 
-        # Update the number of agents on the road
-        is_agent = aggr_out != 0  # So agent who gets ID : 0 are not agent and can broke the simulation
-        x_updated[is_agent, self.NUMBER_OF_AGENT] = x_updated[is_agent, self.NUMBER_OF_AGENT] + 1
-        return x_updated
+            # Update the number of agents on the road
+            is_agent = aggr_out != 0  # So agent who gets ID : 0 are not agent and can break the simulation
+            x[is_agent, self.NUMBER_OF_AGENT] = start_counts[is_agent] + 1
+        return x
 
     def set_time(self, time):
         """
@@ -203,7 +207,14 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         self.time = time
 
 
-    def forward(self, x, edge_index, edge_attr):
+    def forward(
+        self,
+        x,
+        edge_index,
+        edge_attr,
+        critical_number: Optional[torch.Tensor] = None,
+        congestion_constant: Optional[torch.Tensor] = None,
+    ):
         """
         Passes first agents on upstream road to their downstream.
 
@@ -216,5 +227,11 @@ class DirectionMPNN(MessagePassing, FeatureHelpers):
         edge_attr : torch.Tensor
             Edge attribute
         """
-        return self.propagate(edge_index=edge_index, x=x, edge_attr=edge_attr)
+        return self.propagate(
+            edge_index=edge_index,
+            x=x,
+            edge_attr=edge_attr,
+            critical_number=critical_number,
+            congestion_constant=congestion_constant,
+        )
 

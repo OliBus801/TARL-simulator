@@ -2,12 +2,13 @@ import numpy as np
 from lxml import etree
 import torch
 import os
-from torch_geometric.utils import to_dense_adj, to_networkx
 from torch_geometric.data import Data
-from sklearn.neighbors import KDTree
 from datetime import datetime
-import networkx as nx
+from sklearn.neighbors import KDTree
 from src.feature_helpers import AgentFeatureHelpers, FeatureHelpers
+import networkx as nx
+from torch_geometric.utils import to_networkx
+
 
 
 class Agents(AgentFeatureHelpers):
@@ -30,6 +31,7 @@ class Agents(AgentFeatureHelpers):
         self.agent_features = None
         self.time = 0
         self.device = device
+        self.withdraw_history: list[tuple[int, torch.BoolTensor]] = []
 
 
 
@@ -97,16 +99,34 @@ class Agents(AgentFeatureHelpers):
             raise ValueError("The XML file does not contain a 'links' element.")
         
         node_positions = {node.get("id"): (float(node.get("x")), float(node.get("y"))) for node in nodes}
-        link_positions = np.zeros((len(links), 2))
+        num_links = len(links)
+        link_positions = np.zeros((num_links, 2))
+        link_from_id = {}
+        link_to_id = {}
+        link_from_list = []
+        link_to_list = []
+        intersections = set()
         for i, link in enumerate(links):
             a, b = link.get("from"), link.get("to")
             link_positions[i, 0] = (node_positions[a][0] + node_positions[b][0]) / 2
             link_positions[i, 1] = (node_positions[a][1] + node_positions[b][1]) / 2
-        
-        import time
-        t0 = time.time()
-        tree = KDTree(link_positions)
-        kd_time_ms = (time.time() - t0) * 1000
+            lid = link.get("id")
+            link_from_id[lid] = a
+            link_to_id[lid] = b
+            link_from_list.append(a)
+            link_to_list.append(b)
+            intersections.update([a, b])
+
+        # Map intersections -> (SRC, DEST) indices as created in config_network
+        intersection_indices = {}
+        sorted_intersections = sorted(intersections)
+        for idx, inter in enumerate(sorted_intersections):
+            src_idx = num_links + 2 * idx
+            intersection_indices[inter] = (src_idx, src_idx + 1)
+
+        # Build a KDTree over intersection node coordinates for legacy scenarios
+        intersection_coords = np.array([node_positions[inter] for inter in sorted_intersections])
+        kdtree = KDTree(intersection_coords)
 
         # Creating dummy agent
         dummy_row = [0.0, 0.0, 25 * 3600, 0.0, 20.0, 0.0, 0.0, 0.0, 0.0]
@@ -138,19 +158,42 @@ class Agents(AgentFeatureHelpers):
             employed = 1 if attrs.get("employed", "no").lower() == "yes" else 0
             age = float(attrs.get("age", 0))
             valid_trips = 0
-            for i in range(len(acts)-1):
+            for i in range(len(acts) - 1):
+                origin_node = acts[i].get("link")
+                dest_node = acts[i + 1].get("link")
+
+                # Legacy support: infer nearest intersection from coordinates if link is invalid
+                if origin_node not in intersection_indices:
+                    ox, oy = acts[i].get("x"), acts[i].get("y")
+                    if ox is not None and oy is not None:
+                        try:
+                            idx = kdtree.query([[float(ox), float(oy)]], return_distance=False)[0][0]
+                            origin_node = sorted_intersections[idx]
+                        except Exception:
+                            pass
+                if dest_node not in intersection_indices:
+                    dx, dy = acts[i + 1].get("x"), acts[i + 1].get("y")
+                    if dx is not None and dy is not None:
+                        try:
+                            idx = kdtree.query([[float(dx), float(dy)]], return_distance=False)[0][0]
+                            dest_node = sorted_intersections[idx]
+                        except Exception:
+                            pass
                 try:
-                    x0 = float(acts[i].get("x")); y0 = float(acts[i].get("y"))
-                    x1 = float(acts[i+1].get("x")); y1 = float(acts[i+1].get("y"))
-                except (TypeError, ValueError):
+                    if origin_node in intersection_indices and dest_node in intersection_indices:
+                        src_idx = intersection_indices[origin_node][0]
+                        dest_idx = intersection_indices[dest_node][1]
+                    else:
+                        print(f"Could not create plan for person {person.get('id')}: Invalid trip : {origin_node} -> {dest_node}")
+                        continue
+                except (TypeError, ValueError, KeyError):
                     invalid_trip_coords += 1
                     continue
-                _, idx_o = tree.query([[x0,y0]], k=1)
-                _, idx_d = tree.query([[x1,y1]], k=1)
+
                 dep = extract_departure_time(acts[i])
                 rows.append([
-                    float(idx_o[0,0]),
-                    float(idx_d[0,0]),
+                    float(src_idx),
+                    float(dest_idx),
                     float(dep),
                     0.0,
                     age,
@@ -191,98 +234,168 @@ class Agents(AgentFeatureHelpers):
                 counts = np.bincount(dep_hours, minlength=24)
 
                 # Impression formatée
-                print("📊 | Histogramme des départs (bins = 1h) (null counts ignored) :")
+                print("📊 | Departure histogram (bins = 1h) (null counts ignored):")
                 for h in range(24):
                     if counts[h] >= 1:
                         print(f"{h:02d}h : {counts[h]}")
             print(f"{info} First rows (origin, destination, dep_time):\n{self.agent_features[:3,[self.ORIGIN,self.DESTINATION,self.DEPARTURE_TIME]]}")
-            print(f"{info} Network: {len(nodes)} nodes, {len(links)} links, KDTree build {kd_time_ms:.2f} ms")
+            print(f"{info} Network: {len(nodes)} nodes, {len(links)} links")
 
-    def insert_agent_into_network(self, x: torch.Tensor, h: FeatureHelpers) -> None:
+    def insert_agent_into_network(self, graph: Data, h: FeatureHelpers) -> torch.Tensor:
+        """Insert all agents that are ready to depart into the traffic network."""
+
+        ready = (
+            (self.agent_features[:, self.DEPARTURE_TIME] <= self.time)
+            & (self.agent_features[:, self.ON_WAY] == 0)
+            & (self.agent_features[:, self.DONE] == 0)
+        )
+        if not torch.any(ready):
+            return graph.x
+
+        #graph = self.choice(graph, h)  # This greatly reduces the computational overhead
+        x = graph.x
+
+        origins = self.agent_features[ready, self.ORIGIN].to(torch.long)
+        road_idx = x[origins, h.SELECTED_ROAD].to(torch.long)
+
+        # Compute remaining capacity on each selected road
+        remaining_cap = (
+            x[road_idx, h.MAX_NUMBER_OF_AGENT]
+            - h.CONGESTION_FILE
+            - x[road_idx, h.NUMBER_OF_AGENT]
+        ).to(torch.long)
+        capacity_ok = remaining_cap > 0
+        if not torch.any(capacity_ok):
+            return x
+
+        agent_idx = torch.nonzero(ready, as_tuple=False).squeeze(1)[capacity_ok]
+        road_idx = road_idx[capacity_ok]
+        remaining_cap = remaining_cap[capacity_ok]
+
+        order = torch.argsort(road_idx)
+        road_sorted = road_idx[order]
+        agent_sorted = agent_idx[order]
+        cap_sorted = remaining_cap[order]
+
+        unique_roads, counts = torch.unique_consecutive(road_sorted, return_counts=True)
+        start_counts = x[road_sorted, h.NUMBER_OF_AGENT].to(torch.long)
+        # Capacity available per unique road (same value repeated within group)
+        cap_per_road = cap_sorted[torch.cumsum(counts, 0) - counts]
+        allowed_counts = torch.minimum(counts, cap_per_road)
+
+        # Mask to keep only the agents that can actually enter
+        mask = torch.zeros_like(road_sorted, dtype=torch.bool)
+        idx = 0
+        for c, a in zip(counts.tolist(), allowed_counts.tolist()):
+            mask[idx : idx + a] = True
+            idx += c
+
+        road_sorted = road_sorted[mask]
+        agent_sorted = agent_sorted[mask]
+        start_counts = start_counts[mask]
+
+        valid = allowed_counts > 0
+        unique_roads = unique_roads[valid]
+        counts = allowed_counts[valid]
+
+        if agent_sorted.numel() == 0:
+            return x
+
+        offsets = torch.arange(road_sorted.size(0), device=x.device) - torch.repeat_interleave(
+            torch.cat([torch.tensor([0], device=x.device), counts.cumsum(0)[:-1]], dim=0),
+            counts,
+        )
+        positions = start_counts + offsets
+
+        x[road_sorted, h.AGENT_POSITION.start + positions] = agent_sorted.to(torch.float)
+        x[road_sorted, h.AGENT_TIME_ARRIVAL.start + positions] = float(self.time)
+
+        # Compute and store the time of departure for each inserted agent
+        time_congestion = graph.congestion_constant[road_sorted].to(x.dtype) / (x[road_sorted, h.MAX_NUMBER_OF_AGENT] + 10 - start_counts.to(x.dtype))
+        travel_time = torch.max(
+            torch.stack((x[road_sorted, h.FREE_FLOW_TIME_TRAVEL], time_congestion)), dim=0
+        ).values
+        time_departure = float(self.time) + travel_time
+        x[road_sorted, h.AGENT_TIME_DEPARTURE.start + positions] = time_departure
+
+        x[unique_roads, h.NUMBER_OF_AGENT] += counts.to(x.dtype)
+        self.agent_features[agent_sorted, self.ON_WAY] = 1.0
+
+        graph.x = x
+        return x
+
+
+    def withdraw_agent_from_network(
+        self, graph: Data, h: FeatureHelpers
+    ) -> torch.Tensor:
         """
-        Insert agents as much as possible in the traffic network. The origin road is mentionned in agent feature. 
+        Withdraw all agents at the head of the queue that have reached their destination.
 
         Parameters
         ----------
-        x : torch.Tensor
-            A tensor which contains the node features of the network, and which is update 
-            at the end of function.
+        graph : Data
+            The graph representation of the road network containing the precomputed adjacency matrix.
         h : FeatureHelpers
-            Index helpers to understand how columns works
+            Index helpers to understand how columns work.
         """
 
-        # Create a mask in order to select agent which can insert the network
-        mask = ((self.agent_features[:, self.DEPARTURE_TIME] <= self.time) &       # Ensure that the time is good
-                (self.agent_features[:, self.ON_WAY] == 0) &                      # Ensure that the agent is not already on the road
-                (self.agent_features[:, self.DONE] == 0))                         # Ensure that the agent is not already arrived
-        road_index = self.agent_features[:, self.ORIGIN].to(torch.int64)
-        mask = mask & (x[road_index, h.NUMBER_OF_AGENT] < x[road_index, h.MAX_NUMBER_OF_AGENT] - h.CONGESTION_FILE)
-            
+        x = graph.x
+        adj = graph.adj_matrix
 
-        # Need to select only one person to insert per road
-        agent = self.agent_features[mask]                     # agent stores the tensor of agent features to insert
-        if not torch.any(mask):  # No agent to insert
-            return x
-        agent_index = torch.nonzero(mask).squeeze(0)
-        road = agent[:, self.ORIGIN]
-        nb_waiting_agent = agent_index.size(0)
-        road_sorted, index_road_sorted = torch.sort(road)
-        mask = torch.zeros_like(road, dtype=torch.bool)
-        mask[0] = True
-        mask[1:] = road_sorted[:-1] !=  road_sorted[1:]
-        selected_index = index_road_sorted[mask]
-        road = road[selected_index]
-        agent = agent[selected_index]
-        agent_index = agent_index[selected_index].flatten()
-        nb_waiting_agent -= selected_index.size(0)
+        # Only keep a withdrawal mask for the road nodes; intersection are ignored
+        num_roads = int((x[:, h.ROAD_INDEX] >= 0).sum().item())
+        withdrawn_mask = torch.zeros(num_roads, dtype=torch.bool, device=x.device)
 
-        # Insert all these agents
-        road_select = agent[:, self.ORIGIN].to(torch.int64)
-        end_queue = (x[road_select, h.NUMBER_OF_AGENT]).to(torch.int64) 
-        x[road_select, end_queue] = agent_index.to(torch.float)                   # Queue for agent index
-        x[road_select, h.Nmax + end_queue] = self.time                            # Queue for time arrival
-        x[road_select, 2*h.Nmax + end_queue] = x[road_select, h.NUMBER_OF_AGENT]  # Queue for number of agent in queue
-        x[road_select, h.NUMBER_OF_AGENT] += 1
-        # Update the agent features
-        self.agent_features[agent_index, self.ON_WAY] = 1.0
+        with torch.no_grad():
+            roads = x[:, h.ROAD_INDEX].to(torch.long)
+            agent_ids = x[:, h.AGENT_POSITION].to(torch.long)
+            dest = self.agent_features[agent_ids, self.DESTINATION].to(torch.long)
 
-        # Insert the others agent
-        if nb_waiting_agent > 0:
-            return self.insert_agent_into_network(x, h)
-        else:
-            return x
+            # Determine connectivity and departure eligibility for each slot
+            connectivity = adj[roads.unsqueeze(1), dest] > 0
+            depart_ok = x[:, h.AGENT_TIME_DEPARTURE] <= self.time
+            active_slots = (
+                torch.arange(h.Nmax, device=x.device)
+                < x[:, h.NUMBER_OF_AGENT].unsqueeze(1)
+            )
+            eligible = connectivity & depart_ok & active_slots
 
+            # Identify consecutive eligible agents starting from head
+            cum_eligible = torch.cumprod(eligible.long(), dim=1).bool()
+            withdraw_counts = cum_eligible.sum(dim=1)
+            withdrawn_mask = withdraw_counts[:num_roads] > 0
 
-    def withdraw_agent_from_network(self, x: torch.Tensor, h: FeatureHelpers) -> None:
-        """
-        Withdraws all agents in the front of queue of every road in the traffic network. 
+            if withdraw_counts.any():
+                agents_to_withdraw = agent_ids[cum_eligible]
 
-        Parameters
-        ----------
-        x : torch.Tensor
-            A tensor which contains the node features of the network, and which is update 
-            at the end of function.
-        h : FeatureHelpers
-            Index helpers to understand how columns works
-        """
-        
-        # Mask agent that have to get out
-        x_update = x.clone()
-        candidate_agent = x_update[:, h.HEAD_FIFO].to(torch.int64)
-        mask = ((self.agent_features[candidate_agent, self.DESTINATION] == x_update[:, h.ROAD_INDEX]) & 
-                (x_update[:, h.NUMBER_OF_AGENT] != 0))
-        # Withdraw these agents from the network
-        x_update[mask, : h.MAX_NUMBER_OF_AGENT - 1] = x_update[mask, 1 : h.MAX_NUMBER_OF_AGENT]
-        x_update[mask, h.NUMBER_OF_AGENT] -= 1
-        self.agent_features[candidate_agent[mask], self.DONE] = 1
-        self.agent_features[candidate_agent[mask], self.ON_WAY] = 0
-        self.agent_features[candidate_agent[mask], self.ARRIVAL_TIME] = self.time
-        mask = ((self.agent_features[candidate_agent, self.DESTINATION] == x_update[:, h.ROAD_INDEX]) &
-                (x_update[:, h.NUMBER_OF_AGENT] != 0))
-        if torch.any(mask):
-            return self.withdraw_agent_from_network(x_update, h)
-        else:
-            return x_update
+                idx = torch.arange(h.Nmax, device=x.device)
+                shift_idx = idx.unsqueeze(0) + withdraw_counts.unsqueeze(1)
+                valid = shift_idx < h.Nmax
+
+                pos = x[:, h.AGENT_POSITION]
+                arr = x[:, h.AGENT_TIME_ARRIVAL]
+                dep = x[:, h.AGENT_TIME_DEPARTURE]
+
+                new_pos = pos.gather(1, shift_idx.clamp(max=h.Nmax - 1))
+                new_arr = arr.gather(1, shift_idx.clamp(max=h.Nmax - 1))
+                new_dep = dep.gather(1, shift_idx.clamp(max=h.Nmax - 1))
+
+                new_pos[~valid] = 0
+                new_arr[~valid] = 0
+                new_dep[~valid] = 0
+
+                x[:, h.AGENT_POSITION] = new_pos
+                x[:, h.AGENT_TIME_ARRIVAL] = new_arr
+                x[:, h.AGENT_TIME_DEPARTURE] = new_dep
+                x[:, h.NUMBER_OF_AGENT] -= withdraw_counts
+
+                self.agent_features[agents_to_withdraw, self.DONE] = 1
+                self.agent_features[agents_to_withdraw, self.ON_WAY] = 0
+                self.agent_features[agents_to_withdraw, self.ARRIVAL_TIME] = self.time
+
+        self.withdraw_history.append((self.time, withdrawn_mask.clone()))
+        return x
+
 
 
     def save(self, file_path: str) -> None:
@@ -324,20 +437,56 @@ class Agents(AgentFeatureHelpers):
         # We make sure that the agent ID: 0 will never join the network
         self.agent_features[0, self.DEPARTURE_TIME] = 48*3600
 
+    @torch.no_grad()
     def choice(self, graph: Data, h: FeatureHelpers):
         """
-        Chose the next direction to take for each agent
-
-        Parameters
-        ----------
+        Sample next road for:
+        - road nodes: use adj[roads, roads]
+        - SRC nodes:  use adj[SRC_rows, roads]
         """
-        node_feature = graph.x.clone()                                # Clone the node_feature for mo
-        adj = to_dense_adj(graph.edge_index)                          # Compute the adjency matrix
-        adj = (adj / adj.sum(dim = -1, keepdim=True)).squeeze(0)       # Normalise the adjency matrix
-        index = torch.multinomial(adj, num_samples=1).squeeze(1)      # Draw the next moves
-        node_feature[:, h.SELECTED_ROAD] = index.to(torch.float)      # Update the choice of user
-        updated_graph = Data(x=node_feature, edge_index=graph.edge_index, edge_attr=graph.edge_attr)
-        return updated_graph
+        x = graph.x
+        device, dtype = x.device, x.dtype
+        total_nodes = x.size(0)
+        num_roads   = int(graph.num_roads)
+
+        adj = graph.adj_matrix.to(dtype)  # ensure float for normalization
+
+        # ----- ROADS -> ROADS (top-left block) -----
+        road_adj  = adj[:num_roads, :num_roads]
+        road_out  = road_adj.sum(dim=1)
+        road_mask = road_out > 0
+        road_probs = road_adj[road_mask]
+        if road_probs.numel() > 0:
+            road_probs = road_probs / road_probs.sum(dim=1, keepdim=True)
+
+        # ----- SRC -> ROADS using precomputed normalized probabilities -----
+        src_adj = graph.src_adj.to(dtype) if hasattr(graph, "src_adj") else None
+        src_rows_idx = torch.arange(num_roads, total_nodes, 2, device=device)
+        if src_adj is not None and src_adj.numel() > 0:
+            src_mask = src_adj.sum(dim=1) > 0
+            src_probs = src_adj[src_mask]
+        else:
+            src_mask = torch.empty(0, dtype=torch.bool, device=device)
+            src_probs = torch.empty(0, num_roads, dtype=dtype, device=device)
+
+        # ----- Sampling (roads first, then SRC) -----
+        probs = torch.cat([road_probs, src_probs], dim=0)
+        if probs.numel() > 0:
+            sampled = torch.multinomial(probs, num_samples=1).squeeze(1)  # indices de routes [0..num_roads-1]
+
+            # write back for road nodes
+            road_ids = torch.arange(num_roads, device=device)[road_mask]
+            n_road = road_probs.size(0)
+            x[road_ids, h.SELECTED_ROAD] = sampled[:n_road].to(dtype)
+
+            # write back for SRC nodes
+            if src_mask.numel() > 0:
+                src_ids_global = src_rows_idx[src_mask]
+                x[src_ids_global, h.SELECTED_ROAD] = sampled[n_road:].to(dtype)
+
+        graph.x = x
+        return graph
+
     
     def reset(self):
         """
@@ -345,12 +494,13 @@ class Agents(AgentFeatureHelpers):
         """
         self.agent_features[:, self.ON_WAY] = 0.0
         self.agent_features[:, self.DONE] = 0.0
+        self.withdraw_history = []
+
         
 
     def set_time(self, time):
         """
-        Set the time 
-        
+        Set the time for the agents.
 
         Parameters
         ----------
@@ -365,7 +515,7 @@ class DijkstraAgents(Agents):
     def __init__(self, device):
         super().__init__(device)
         self.count = 0
-        self.refresh_rate = 1000000 # Number of iterations before refreshing the Dijkstra computing
+        self.refresh_rate = 10 # Number of iterations before refreshing the Dijkstra computing
 
 
     def choice(self, graph: Data, h: FeatureHelpers):
@@ -383,9 +533,8 @@ class DijkstraAgents(Agents):
         if self.count % self.refresh_rate == 0:
             # Compute travel time
             x_j = graph.x[graph.edge_index[0]]  # Source node
-            critical_number = x_j[:, h.MAX_FLOW] * x_j[:, h.FREE_FLOW_TIME_TRAVEL] / 3600
-            time_congestion = x_j[:, h.FREE_FLOW_TIME_TRAVEL] * (x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number) / (
-                x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - x_j[:, h.HEAD_FIFO_CONG]
+            time_congestion = graph.congestion_constant[graph.edge_index[1]] / (
+                x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - x_j[:, h.NUMBER_OF_AGENT]
             )
 
             # Travel time = max(free-flow, congested)
@@ -424,12 +573,7 @@ class DijkstraAgents(Agents):
         x_update[:, h.SELECTED_ROAD] = self.next_hop_tensor[idx, destinations]
 
         # Mise à jour du graphe
-        updated_graph = Data(x=x_update, edge_index=graph.edge_index, edge_attr=graph.edge_attr)
+        graph.x = x_update
         self.count += 1
-        return updated_graph
-    
-
-
-
-
+        return graph
 

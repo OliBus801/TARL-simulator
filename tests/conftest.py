@@ -18,10 +18,10 @@ def device():
 @pytest.fixture
 def agents(device):
     agent = Agents(device)
-    # create two simple agents ready to depart from road 0 and arrive at road 0
+    # Two agents departing from SRC node 1 and targeting road 0
     agent.agent_features = torch.tensor([
-        [0.0, 0.0, 0.0, 0.0, 30.0, 0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 25.0, 1.0, 0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 30.0, 0.0, 1.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0, 0.0, 25.0, 1.0, 0.0, 0.0, 0.0],
     ])
     agent.time = 0
     return agent
@@ -81,7 +81,14 @@ def braess_graph():
     ], dtype=torch.long)
     edge_attr = torch.rand(edge_index.size(1), 1)
 
-    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    return Data(
+        x=x,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        edge_index_routes=edge_index,
+        edge_attr_routes=edge_attr,
+        num_roads=x.size(0),
+    )
 
 
 @pytest.fixture
@@ -103,10 +110,11 @@ def simple_network_file(tmp_path):
 def simulator(device, simple_network_file):
     sim = TransportationSimulator(device)
     sim.config_network(simple_network_file)
-    sim.agent.agent_features = torch.zeros((1, 9))
-    sim.agent.agent_features[0, 0] = 0  # origin
-    sim.agent.agent_features[0, 1] = 0  # destination
-    sim.agent.agent_features[0, 2] = 0  # departure time
+    sim.agent.agent_features = torch.zeros((2, 9))
+    sim.agent.agent_features[0, sim.agent.DEPARTURE_TIME] = 25 * 3600  # dummy agent
+    sim.agent.agent_features[1, 0] = 2  # origin SRC node
+    sim.agent.agent_features[1, 1] = 5  # destination DEST node
+    sim.agent.agent_features[1, 2] = 0  # departure time
     sim.config_parameters(start_time=1)
     sim.agent.set_time(sim.time)
     return sim

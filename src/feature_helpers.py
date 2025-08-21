@@ -7,8 +7,8 @@ class FeatureHelpers:
             - The FIFO queue. Contains the IDs of agents.
         AGENT_TIME_ARRIVAL: slice(Nmax, 2 * Nmax)
             - The arrival times of agents in the FIFO queue.
-        AGENT_POSITION_AT_ARRIVAL: slice(2 * Nmax, 3 * Nmax)
-            - The positions of agents at their arrival.
+        AGENT_TIME_DEPARTURE: slice(2 * Nmax, 3 * Nmax)
+            - The departure times of agents from the FIFO queue.
         MAX_NUMBER_OF_AGENT: 3 * Nmax
             - The size of the FIFO queue.
         NUMBER_OF_AGENT: 3 * Nmax + 1
@@ -20,15 +20,17 @@ class FeatureHelpers:
         MAX_FLOW: 3 * Nmax + 4
             - The maximum flow capacity of the road.
         SELECTED_ROAD: 3 * Nmax + 5
-            - The index of the selected road. (?)
+            - The index of the next selected road of the first agent in the FIFO queue.
         ROAD_INDEX: 3 * Nmax + 6
             - The index of the road.
+        NODE_TYPE: 3 * Nmax + 7
+            - Type of node (e.g. road, source or destination).
         HEAD_FIFO: 0
             - The ID of the agent at the head of the FIFO queue.
-        HEAD_FIFO_TIME: Nmax
-            - The time at the head of the FIFO queue. (?)
-        HEAD_FIFO_CONG: 2*Nmax
-            - The congestion value at the head of the FIFO queue. (?)
+        HEAD_FIFO_ARRIVAL_TIME: Nmax
+            - The arrival time of the agent at the head of the FIFO queue.
+        HEAD_FIFO_DEPARTURE_TIME: 2 * Nmax
+            - The departure time of the agent at the head of the FIFO queue.
         CONGESTION_FILE: 3
             - A constant that determines the congestion buffer size reserved only to resolve gridlock situations.
     """
@@ -37,7 +39,7 @@ class FeatureHelpers:
         self.Nmax = Nmax
         self.AGENT_POSITION = slice(0, Nmax)
         self.AGENT_TIME_ARRIVAL = slice(Nmax, 2 * Nmax)
-        self.AGENT_POSITION_AT_ARRIVAL = slice(2 * Nmax, 3 * Nmax)
+        self.AGENT_TIME_DEPARTURE = slice(2 * Nmax, 3 * Nmax)
         self.MAX_NUMBER_OF_AGENT = 3 * Nmax
         self.NUMBER_OF_AGENT = 3 * Nmax + 1
         self.FREE_FLOW_TIME_TRAVEL = 3 * Nmax + 2
@@ -45,17 +47,18 @@ class FeatureHelpers:
         self.MAX_FLOW = 3 * Nmax + 4
         self.SELECTED_ROAD = 3 * Nmax + 5
         self.ROAD_INDEX = 3 * Nmax + 6
+        self.NODE_TYPE = 3 * Nmax + 7
         self.HEAD_FIFO = 0
-        self.HEAD_FIFO_TIME = Nmax
-        self.HEAD_FIFO_CONG = 2*Nmax
-        self.CONGESTION_FILE = 3 
+        self.HEAD_FIFO_ARRIVAL_TIME = Nmax
+        self.HEAD_FIFO_DEPARTURE_TIME = 2 * Nmax
+        self.CONGESTION_FILE = 3
 
 class AgentFeatureHelpers:
     """ A class to help with agent feature indexing """
 
     def __init__(self):
-        self.ORIGIN = 0                     # Contains the index of the origin road 
-        self.DESTINATION = 1                # Contains the index of the destination road
+        self.ORIGIN = 0                     # Contains the SRC(i) node index of the origin intersection
+        self.DESTINATION = 1                # Contains the DEST(j) node index of the destination intersection
         self.DEPARTURE_TIME = 2             # Contains the index of departure time
         self.ARRIVAL_TIME = 3               # Contains the arrival time in the scenario
         self.AGE = 4                        # Contains the age of the agent

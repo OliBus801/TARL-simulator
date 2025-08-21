@@ -31,10 +31,11 @@ class TransportationSimulator:
         Timestep for the simulation
     """
 
-    def __init__(self, device: str):
+    def __init__(self, device: str, torch_compile: bool = False):
         self.model_core = None
         self.agent = Agents(device)
         self.device = device
+        self.torch_compile = torch_compile
 
         # The feature are the graph transportation network
         self.graph = None
@@ -98,12 +99,21 @@ class TransportationSimulator:
             effective_cell_size = float(links.get("effectivecellsize"))
         except:
             effective_cell_size = 7.5
-        h = FeatureHelpers(Nmax=0)  # Assuming a default Nmax of 100, can be adjusted as needed
+        h = FeatureHelpers(Nmax=0)
 
-        # Pre-processing the links to create node features
+        # Pre-processing the links to create node features and gather intersections
         node_features = []
+        intersections = set()
+        outgoing = defaultdict(list)
+        incoming = defaultdict(list)
         for i, link in enumerate(tqdm.tqdm(links, desc="Processing links")):
             attrs = link.attrib
+            from_id = attrs["from"]
+            to_id = attrs["to"]
+            intersections.update([from_id, to_id])
+            outgoing[from_id].append(i)
+            incoming[to_id].append(i)
+
             feature = torch.zeros(h.ROAD_INDEX - h.MAX_NUMBER_OF_AGENT + 1, dtype=torch.float32)
             feature[h.ROAD_INDEX] = i
             feature[h.LENGHT_OF_ROAD] = float(attrs["length"])
@@ -113,52 +123,105 @@ class TransportationSimulator:
                 feature[h.LENGHT_OF_ROAD] * float(attrs["permlanes"]) / effective_cell_size
             ) + 1
             node_features.append(feature)
-        
+
         # Update Nmax based on the maximum number of agents in the node features
         self.Nmax = int(max(f[h.MAX_NUMBER_OF_AGENT] for f in node_features).item() + 1)
         h = FeatureHelpers(Nmax=self.Nmax)
         self.h = h
 
-        # Create the node features tensor
-        x = torch.zeros((len(node_features), int(3*self.Nmax + 7)), dtype=torch.float32)
-        for i in tqdm.tqdm(range(len(node_features)), desc="Building node features"):
+        # Create the node features tensor including SRC/DEST nodes
+        num_roads = len(node_features)
+        num_inters = len(intersections)
+        x = torch.zeros((num_roads + 2 * num_inters, int(3*self.Nmax + 7)), dtype=torch.float32)
+        for i in tqdm.tqdm(range(num_roads), desc="Building node features"):
             x[i, h.MAX_NUMBER_OF_AGENT : h.ROAD_INDEX + 1] = node_features[i]
-        
-        
-        # Prepare the mapping : from_nodes -> [link indices]
-        nodes = defaultdict(list)
-        for i, link in enumerate(tqdm.tqdm(links, desc="Building edge index")):
-            nodes[link.get("from")].append(i)
 
-        # Create the edge and the edge attributes
-        to_list = []
-        from_list = []
-        edge_attr = []
+        neutral_feature = torch.zeros(int(3*self.Nmax + 7), dtype=torch.float32)
+        neutral_feature[h.ROAD_INDEX] = -1
+        intersection_indices = {}
+        for idx, inter in enumerate(sorted(intersections)):
+            src_idx = num_roads + 2 * idx
+            dest_idx = src_idx + 1
+            x[src_idx] = neutral_feature
+            x[dest_idx] = neutral_feature
+            intersection_indices[inter] = (src_idx, dest_idx)
 
-        for j, link in enumerate(tqdm.tqdm(links, desc="Building edge attributes")):
+        # Create the route->route edges
+        route_from_list = []
+        route_to_list = []
+        route_edge_attr = []
+        for j, link in enumerate(tqdm.tqdm(links, desc="Building route→route edges")):
             attrs = link.attrib
             upstream = j
             to_node = attrs["to"]
             total_flow = 0.0
-            edge_indices_start = len(edge_attr)
+            edge_indices_start = len(route_edge_attr)
 
-            for downstream in nodes[to_node]:
-                from_list.append(upstream)
-                to_list.append(downstream)
+            for downstream in outgoing[to_node]:
+                route_from_list.append(upstream)
+                route_to_list.append(downstream)
                 cap = float(attrs["capacity"])
-                edge_attr.append(cap)
+                route_edge_attr.append(cap)
                 total_flow += cap
 
-            # Normalisation
-            for i in range(edge_indices_start, len(edge_attr)):
-                edge_attr[i] /= total_flow if total_flow > 0 else 1.0
+            for i in range(edge_indices_start, len(route_edge_attr)):
+                route_edge_attr[i] /= total_flow if total_flow > 0 else 1.0
 
-        # Convert NumPy to Torch
-        edge_index = torch.from_numpy(np.array([from_list, to_list], dtype=np.int64))
-        edge_attr = torch.from_numpy(np.array(edge_attr, dtype=np.float32).reshape(-1, 1))
+        edge_index_routes = torch.tensor([route_from_list, route_to_list], dtype=torch.long)
+        edge_attr_routes = torch.tensor(route_edge_attr, dtype=torch.float32).view(-1, 1)
+
+        # Build complete edge list including SRC/DEST nodes
+        from_list = route_from_list.copy()
+        to_list = route_to_list.copy()
+        edge_attr = route_edge_attr.copy()
+
+        # SRC(i) -> route edges
+        for inter, (src_idx, _) in intersection_indices.items():
+            for road in outgoing.get(inter, []):
+                from_list.append(src_idx)
+                to_list.append(road)
+                edge_attr.append(0.0)
+
+        # route -> DEST(j) edges
+        for inter, (_, dest_idx) in intersection_indices.items():
+            for road in incoming.get(inter, []):
+                from_list.append(road)
+                to_list.append(dest_idx)
+                edge_attr.append(0.0)
+
+        edge_index = torch.tensor([from_list, to_list], dtype=torch.long)
+        edge_attr = torch.tensor(edge_attr, dtype=torch.float32).view(-1, 1)
+
+        # Compute the adjacency matrix
+        num_nodes = x.size(0)
+        adjacency_matrix = torch.zeros((num_nodes, num_nodes), dtype=torch.bool)
+        adjacency_matrix[edge_index[0], edge_index[1]] = 1
+
+        # Pre-compute normalized adjacency for SRC nodes -> roads
+        src_rows_idx = torch.arange(num_roads, num_nodes, 2, dtype=torch.long)
+        src_adj = adjacency_matrix[src_rows_idx, :num_roads].to(torch.float32)
+        src_deg = src_adj.sum(dim=1, keepdim=True)
+        src_adj = torch.where(src_deg > 0, src_adj / src_deg, torch.zeros_like(src_adj))
+
+        # Pre-compute static congestion factors
+        critical_number = x[:, h.MAX_FLOW] * x[:, h.FREE_FLOW_TIME_TRAVEL] / 3600
+        congestion_constant = x[:, h.FREE_FLOW_TIME_TRAVEL] * (
+            x[:, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number
+        )
 
         # Creating the PyG Graph object
-        self.graph = Data(x=x, edge_index=edge_index, edge_attr=edge_attr).to(self.device)
+        self.graph = Data(
+            x=x,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            edge_index_routes=edge_index_routes,
+            edge_attr_routes=edge_attr_routes,
+            num_roads=num_roads,
+            adj_matrix=adjacency_matrix,
+            src_adj=src_adj,
+            critical_number=critical_number,
+            congestion_constant=congestion_constant,
+        ).to(self.device)
 
         # Print the execution time
         end_time = time.time()
@@ -205,8 +268,8 @@ class TransportationSimulator:
         
     def configure_core(self):
         """
-        Configure the simulation core for handle road simulation thanks to the 
-        
+        Configure the simulation core for handle road simulation thanks to the
+
 
         Parameters
         ----------
@@ -214,35 +277,41 @@ class TransportationSimulator:
             Relative or absolute path which contains the MATSim configuration
         ----------
         """
-        self.model_core = SimulationCoreModel(self.Nmax, self.device, self.time)
+        self.model_core = SimulationCoreModel(
+            self.Nmax, self.device, self.time, torch_compile=self.torch_compile
+        )
     
-    def set_time(self, time, increment):
+    def set_time(self, time):
         """
-        
+        Set the simulation time for the environment, agent, and model core.
+        Args:
+            time (float): The current simulation time.
         """
         self.time = time
         self.agent.set_time(time)
-        self.model_core.set_time(time + increment)
+        self.model_core.set_time(time)
 
     def run(self):
         h = FeatureHelpers(Nmax=self.Nmax)
 
         
-        # Insert first agent in the network
+        # Insert agent in the network
         b = time.time()
-        self.graph.x = self.agent.insert_agent_into_network(self.graph.x, h)
+        self.graph.x = self.agent.insert_agent_into_network(self.graph, h)
         e = time.time()
         self.inserting_time += e-b
 
         # Withdraw agents
         b = e
-        self.graph.x = self.agent.withdraw_agent_from_network(self.graph.x, h)
+        self.graph.x = self.agent.withdraw_agent_from_network(
+            self.graph, h
+        )
         e = time.time()
         self.withdraw_time += e-b
 
         
         # Run the simulation
-        old_positions = self.graph.x[:, h.NUMBER_OF_AGENT]
+        #old_positions = self.graph.x[:, h.NUMBER_OF_AGENT]
         b = e
         self.graph = self.agent.choice(self.graph, h)
         e = time.time()
@@ -253,7 +322,8 @@ class TransportationSimulator:
         self.graph = self.model_core(self.graph)
         e = time.time()
         self.core_time += e-b
-
+        """
+        # This is broken and maybe not even useful.
         i = 0
         while torch.any(old_positions != self.graph.x[:, h.NUMBER_OF_AGENT]) and i < 5:
             # Compute the direction of the agents
@@ -268,8 +338,8 @@ class TransportationSimulator:
             e = time.time()
             self.core_time += e-b
             i+=1 
-
-        self.set_time(self.time + self.timestep, self.timestep)
+        """
+        self.set_time(self.time + self.timestep)
 
         value_on_way = torch.sum(self.agent.agent_features[:, self.agent.ON_WAY])
         value_done = torch.sum(self.agent.agent_features[:, self.agent.DONE])
@@ -283,7 +353,7 @@ class TransportationSimulator:
     def reset(self):
         h = FeatureHelpers(Nmax=self.Nmax)
         torch.zero_(self.graph.x[:, h.AGENT_POSITION])
-        torch.zero_(self.graph.x[:, h.AGENT_POSITION_AT_ARRIVAL])
+        torch.zero_(self.graph.x[:, h.AGENT_TIME_DEPARTURE])
         torch.zero_(self.graph.x[:, h.AGENT_TIME_ARRIVAL])
         torch.zero_(self.graph.x[:, h.NUMBER_OF_AGENT])
         
@@ -404,8 +474,8 @@ class TransportationSimulator:
             return None
         
         # Number of nodes
-        num_nodes = len(self.graph.x)
-        origin_idx = self.graph.edge_index[0]  # [E]
+        num_nodes = self.graph.num_roads
+        origin_idx = self.graph.edge_index_routes[0]  # [E]
 
         # --- Vectorisation temporelle ---
         # Timestamps et matrice [T, E] des valeurs edge-wise
@@ -510,15 +580,19 @@ class TransportationSimulator:
         import pandas as pd
         # --- 1) Hourly traffic counts ---
         
-        # Retrieve the collected data from the model core
+        # Retrieve the collected data from the model core and agent withdrawals 
         update_history = getattr(self.model_core.response_mpnn, 'update_history', [])
-        if not update_history:
+        withdraw_history = getattr(self.agent, 'withdraw_history', [])
+        combined_history = update_history + withdraw_history
+        if not combined_history:
             print("No update history available for computing node metrics.")
             return {}
         
+    
+        
         # Retrieve all times and all masks into tensors
-        times = torch.tensor([t for t, _ in update_history], dtype=torch.long)      # (T,)
-        mask_matrix = torch.stack([mask for _, mask in update_history], dim=0)      # (T, N), dtype=torch.bool
+        times = torch.tensor([t for t, _ in combined_history], dtype=torch.long)      # (T,)
+        mask_matrix = torch.stack([mask for _, mask in combined_history], dim=0)      # (T, N), dtype=torch.bool
 
         # Compute hours and hourly dimension
         hours = (times // 3600).clamp(min=0)    # (T,)
@@ -544,8 +618,8 @@ class TransportationSimulator:
 
         h = FeatureHelpers(Nmax=self.Nmax)
 
-        cap = self.graph.x[:, h.MAX_FLOW]        # (N,)
-        # Avoid division by zero by replacing 0 → NaN
+        cap = self.graph.x[:num_nodes, h.MAX_FLOW]        # (N,)
+        # Avoid division by zero by replacing 0 → NaN while keeping shape
         cap_safe = cap.clone()
         cap_safe[cap_safe == 0] = float('nan')
 
@@ -598,21 +672,15 @@ class TransportationSimulator:
     def get_info(self, road_id, h: FeatureHelpers):
 
         road = self.graph.x[road_id]
-        # Compute the time departure
-        critical_number = road[h.MAX_FLOW] * road[h.FREE_FLOW_TIME_TRAVEL] /3600
-        time_congestion = road[h.FREE_FLOW_TIME_TRAVEL] * (road[h.MAX_NUMBER_OF_AGENT] + 10 - critical_number) /(road[h.MAX_NUMBER_OF_AGENT]+10 - road[h.HEAD_FIFO_CONG])
-        
-        # Time departure
-        time_arrival = road[h.HEAD_FIFO_TIME]
-        time_departure = time_arrival + torch.max(road[h.FREE_FLOW_TIME_TRAVEL], time_congestion)
+        time_arrival = road[h.HEAD_FIFO_ARRIVAL_TIME]
+        time_departure = road[h.HEAD_FIFO_DEPARTURE_TIME]
 
-        # Time departure
-        time_arrival = road[h.HEAD_FIFO_TIME]
-        time_departure = time_arrival + max(road[h.FREE_FLOW_TIME_TRAVEL], time_congestion)
-        return (f"Route {road_id} : {road[h.NUMBER_OF_AGENT]} / {road[h.MAX_NUMBER_OF_AGENT]} \n"
-                f"Queue: {road[h.AGENT_POSITION][:15]}\n" 
-                f"Prochain depart dans {time_departure - self.time} vers la route {road[h.SELECTED_ROAD]}\n"
-                f"Heure actuel : {self.time}")
+        return (
+            f"Route {road_id} : {road[h.NUMBER_OF_AGENT]} / {road[h.MAX_NUMBER_OF_AGENT]} \n"
+            f"Queue: {road[h.AGENT_POSITION][:15]}\n"
+            f"Prochain depart dans {time_departure - self.time} vers la route {road[h.SELECTED_ROAD]}\n"
+            f"Heure actuel : {self.time}"
+        )
     
 
     def save(self, path):

@@ -6,6 +6,7 @@ from torch_geometric.data import Data
 from src.feature_helpers import FeatureHelpers # A Supprimer
 import torch
 
+
 class SimulationCoreModel(nn.Module):
     """
     Simulation Core that captures road dynamics but does not handle insertion or withdrawal agent.
@@ -27,10 +28,13 @@ class SimulationCoreModel(nn.Module):
         The maximal number of agents in a queue.
     """
 
-    def __init__(self, Nmax: int, device: str, time: int):
+    def __init__(self, Nmax: int, device: str, time: int, torch_compile: bool = False):
         super(SimulationCoreModel, self).__init__()
         self.direction_mpnn = DirectionMPNN(Nmax=Nmax, time=time).to(device)
         self.response_mpnn = ResponseMPNN(Nmax=Nmax, time=time).to(device)
+        if torch_compile:
+            self.direction_mpnn = torch.compile(self.direction_mpnn)
+            self.response_mpnn = torch.compile(self.response_mpnn)
         self.time = time
         self.Nmax = Nmax
 
@@ -41,34 +45,42 @@ class SimulationCoreModel(nn.Module):
         Parameters
         ----------
         graph : Data
-            The graph representing the traffic network
-        edge_index : torch.Tensor
-            Edge index
-        edge_attr : torch.Tensor
-            Edge attribute
+            The graph representing the traffic network.
         """
-        """
-        Forward pass of the simulation core model.
-        Args:
-            graph: The input graph data.
-        Returns:
-            The output graph data after processing through the MPNN layers.
-        """
-        n = torch.sum(graph.x[:, self.direction_mpnn.NUMBER_OF_AGENT])
-        # Process the graph through the DirectionMPNN layer
-        node_feature = self.direction_mpnn(graph.x, graph.edge_index, graph.edge_attr)
-        
-        # Process the graph through the ResponseMPNN layer
-        node_feature = self.response_mpnn(node_feature, graph.edge_index, graph.edge_attr)
+        # Forward pass of the simulation core model.
+        num_roads = graph.num_roads
+        x_roads = graph.x[:num_roads]
 
-        # Update the graph with the new features
-        updated_graph = Data(x=node_feature, edge_index=graph.edge_index, edge_attr=graph.edge_attr)
+        # Retrieve or compute pre-computed static factors
+        if hasattr(graph, "critical_number") and hasattr(graph, "congestion_constant"):
+            critical_number = graph.critical_number[:num_roads]
+            congestion_constant = graph.congestion_constant[:num_roads]
+        else:
+            h = self.direction_mpnn
+            critical_number = (
+                graph.x[:num_roads, h.MAX_FLOW]
+                * graph.x[:num_roads, h.FREE_FLOW_TIME_TRAVEL]
+                / 3600
+            )
+            congestion_constant = graph.x[
+                :num_roads, h.FREE_FLOW_TIME_TRAVEL
+            ] * (graph.x[:num_roads, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number)
+
+        # Use only the road graph for message passing
+        node_feature = self.direction_mpnn(
+            x_roads,
+            graph.edge_index_routes,
+            graph.edge_attr_routes,
+            critical_number=critical_number,
+            congestion_constant=congestion_constant,
+        )
+        node_feature = self.response_mpnn(
+            node_feature, graph.edge_index_routes, graph.edge_attr_routes
+        )
+
+        graph.x[:num_roads] = node_feature
         
-        if n != torch.sum(updated_graph.x[:, self.direction_mpnn.NUMBER_OF_AGENT]):
-            pass
-        return updated_graph
-    
-    
+        return graph
     
     def set_time(self, time):
         self.time = time

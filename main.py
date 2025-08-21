@@ -15,6 +15,16 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--output-dir", type=str, default="runs", help="Directory to save outputs")
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Profile the simulation loop with cProfile",
+    )
+    parser.add_argument(
+        "--torch-compile",
+        action="store_true",
+        help="Enable torch.compile for MPNN models",
+    )
     args = parser.parse_args(argv)
 
     runner = Runner(RunnerArgs(**vars(args)))

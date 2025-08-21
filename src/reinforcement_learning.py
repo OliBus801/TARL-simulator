@@ -104,9 +104,16 @@ class SimulatorEnv(EnvBase):
     A custom environment for reinforcement learning based on the simpson simulator.
     """
 
-    def __init__(self, device: str = 'cpu', timestep_size: int = 1, start_time: int = 0, scenario: str = "Easy"):
+    def __init__(
+        self,
+        device: str = 'cpu',
+        timestep_size: int = 1,
+        start_time: int = 0,
+        scenario: str = "Easy",
+        torch_compile: bool = False,
+    ):
         super().__init__(device=device)
-        self.simulator = TransportationSimulator(device=device)
+        self.simulator = TransportationSimulator(device=device, torch_compile=torch_compile)
         self.simulator.load_network(scenario=scenario)
         self.simulator.config_parameters(timestep_size=timestep_size, start_time=start_time)
         self.to(device)
@@ -193,7 +200,7 @@ class SimulatorEnv(EnvBase):
         if hasattr(self.simulator.model_core.response_mpnn, "update_history"):
             self.simulator.model_core.response_mpnn.update_history = []
 
-        self.simulator.set_time(3600 * 6 - 60, 6)
+        self.simulator.set_time(3600 * 6 - 60)
         x, edge_attr, edge_index, agent_index = self.simulator.state()
         self.simulator.agent.reset()
         reward = torch.tensor([0], dtype=torch.float, device=self.device)
@@ -234,13 +241,15 @@ class SimulatorEnv(EnvBase):
         # Withdraw agents
         b = e
         last_people = self.simulator.graph.x[:, h.HEAD_FIFO].to(torch.long)
-        self.simulator.graph.x = self.simulator.agent.withdraw_agent_from_network(self.simulator.graph.x, h)
+        self.simulator.graph.x = self.simulator.agent.withdraw_agent_from_network(
+            self.simulator.graph, h
+        )
         e = time.time()
         self.simulator.withdraw_time += e - b
 
         # Insert agents
         b = e
-        self.simulator.graph.x = self.simulator.agent.insert_agent_into_network(self.simulator.graph.x, h)
+        self.simulator.graph.x = self.simulator.agent.insert_agent_into_network(self.simulator.graph, h)
         e = time.time()
         self.simulator.inserting_time += e - b
 
@@ -258,7 +267,7 @@ class SimulatorEnv(EnvBase):
         reward = torch.sum(reward).flatten()
 
         if torch.all(self.old_state == self.simulator.graph.x[:, h.NUMBER_OF_AGENT]):
-            self.simulator.set_time(self.simulator.time + self.simulator.timestep, self.simulator.timestep)
+            self.simulator.set_time(self.simulator.time + self.simulator.timestep)
 
         self.old_state = new_state
         if self.simulator.time > 7 * 3600:

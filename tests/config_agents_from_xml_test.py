@@ -32,7 +32,6 @@ def tmp_scenario_dir(tmp_path):
     Note:
       The XML content is hardcoded and intended for demonstration or testing only.
     """
-    """Construit un scénario minimal avec population.xml et network.xml dans un dossier tmp."""
     scen = tmp_path / "scenario"
     scen.mkdir(parents=True, exist_ok=True)
 
@@ -46,7 +45,7 @@ def tmp_scenario_dir(tmp_path):
           <act type="h" x="-20000" y="0" link="1" end_time="06:00" />
           <act type="w" x="-10000" y="0" link="3" end_time="07:00"/>
           <act type="h" x="-20000" y="0" link="1" end_time="08:00"/>
-          <act type="w" x="-10000" y="0" link="3" end_time="09:00"/>
+          <act type="w" x="-20000" y="0" link="3" end_time="09:00"/>
         </plan>
       </person>
       <!-- Person 2 : One trip -->
@@ -61,10 +60,10 @@ def tmp_scenario_dir(tmp_path):
         <plan>
         </plan>
       </person>
-      <!-- Person 4 : One Trip at different time and where origin = destination -->
+      <!-- Person 4 : One Trip at different times and different starting link -->
       <person id="4">
         <plan>
-          <act type="h" x="-20000" y="0" link="3" end_time="04:20" />
+          <act type="h" x="-20000" y="0" link="3" end_time="06:30"/>
           <act type="w" x="-10000" y="0" link="1" end_time="07:00"/>
         </plan>
       </person>
@@ -101,62 +100,51 @@ def _hhmm_to_seconds(hhmm: str) -> int:
 
 def _expected_trips_from_xml(pop_xml_path: Path):
     """
-    Trips attendus pour le graphe dual (links -> nodes, indices internes 0-based).
-    Mapping conforme à `config_network` :
-      - Les indices de noeuds du graphe = ordre d’énumération des <link> dans network.xml
-        (donc on reconstruit id_xml -> idx_interne par enumerate, et NON (id-1)).
-      - Origine  : origin_node = from(a_link), origin_road = lien avec from == origin_node (ici, a_link)
-      - Destination : dest_node = to(b_link), dest_road = lien avec to == dest_node
-    Retourne : [(origin_idx:int, dest_idx:int, dep_time:int)], trié par dep_time.
+    Computes the expected trips with SRC/DEST intersection indices.
+
+    - Intersections are enumerated in the sorted order of their identifiers.
+    - Each intersection i is converted into two nodes: SRC(i) and DEST(i)
+      with indices:
+      SRC(i)  = num_links + 2*idx
+      DEST(i) = num_links + 2*idx + 1
+    - For a trip (act a -> act b):
+      origin = 'from' node of the link of act a
+      destination = 'to' node of the link of act b
+    Returns: [(src_idx:int, dest_idx:int, dep_time:int)]
     """
-    # -- Charger le network --
     net_path = pop_xml_path.with_name("network.xml")
     net_root = ET.parse(net_path).getroot()
     links_el = net_root.find("links")
 
-    # id_xml -> index_interne (ordre du fichier), et tables from/to
-    id2idx = {}
     link_from = {}
     link_to = {}
-    incoming_by_to = {}    # node_to -> [link_id...]
-    for i, link in enumerate(links_el):
-        lid = int(link.attrib["id"])
-        f = int(link.attrib["from"])
-        t = int(link.attrib["to"])
-        id2idx[lid] = i
+    intersections = set()
+    for link in links_el:
+        lid = link.attrib["id"]
+        f = link.attrib["from"]
+        t = link.attrib["to"]
         link_from[lid] = f
         link_to[lid] = t
-        incoming_by_to.setdefault(t, []).append(lid)
+        intersections.update([f, t])
 
-    # -- Parser la population --
+    num_links = len(list(links_el))
+    intersection_indices = {
+        inter: (num_links + 2 * i, num_links + 2 * i + 1)
+        for i, inter in enumerate(sorted(intersections))
+    }
+
     root = ET.parse(pop_xml_path).getroot()
     trips = []
     for person in root.findall("person"):
         acts = person.findall("./plan/act")
         for a, b in zip(acts, acts[1:]):
-            a_link = int(a.attrib["link"])
-            b_link = int(b.attrib["link"])
-
-            # Règle duale
-            origin_node = link_from[a_link]    # nœud 'from' de l'acte de départ
-            dest_node   = link_to[b_link]      # nœud 'to'   de l'acte d'arrivée
-
-            # Origine : on prend le lien dont from == origin_node.
-            # Dans ton mini-réseau linéaire, c’est exactement a_link.
-            origin_road_link_id = a_link
-
-            # Destination : on prend un lien dont to == dest_node (unique ici).
-            cand = incoming_by_to.get(dest_node, [])
-            # Sélection déterministe (au cas où) : le plus petit id.
-            assert len(cand) >= 1, f"Aucun lien avec to == {dest_node} dans network.xml"
-            dest_road_link_id = min(cand)
-
-            # Convertir en indices internes via id2idx (conforme à config_network)
-            origin_idx = id2idx[origin_road_link_id]
-            dest_idx   = id2idx[dest_road_link_id]
-
+            origin_node = a.attrib["link"]
+            dest_node = b.attrib["link"]
+            origin_idx = intersection_indices[origin_node][0]
+            dest_idx = intersection_indices[dest_node][1]
             dep_time = _hhmm_to_seconds(a.attrib["end_time"])
             trips.append((origin_idx, dest_idx, dep_time))
+    
 
     return trips
 
@@ -167,50 +155,46 @@ def _expected_trips_from_xml(pop_xml_path: Path):
 
 def test_config_agents_from_xml_basic(tmp_scenario_dir):
     """
-    Vérifie:
-    - présence d’un dummy (ligne 0) avec caractéristique distinctive,
-    - nombre total de trips (dummy + trips XML),
-    - tri temporel des départs,
-    - (ORIGIN, DESTINATION, DEP_TIME) identiques au XML (mapping identité),
-    - attributs par défaut (AGE/SEX/EMPLOYMENT_STATUS),
-    - aucune entrée “trip” avec DEP_TIME nul.
+    Checks:
+    - presence of a dummy (row 0) with a distinctive feature,
+    - total number of trips (dummy + XML trips),
+    - temporal sorting of departures,
+    - (ORIGIN, DESTINATION, DEP_TIME) identical to XML (identity mapping),
+    - default attributes (AGE/SEX/EMPLOYMENT_STATUS),
+    - no “trip” entry with zero DEP_TIME.
     """
     agent = Agents(device="cpu")
 
-    # Si ta fonction prend un chemin de scénario direct :
     agent.config_agents_from_xml(str(tmp_scenario_dir))
-    # Si elle prend un identifiant et cherche dans un root, adapte ici.
 
     feats = agent.agent_features
-    h = agent  # raccourci pour indices
+    h = agent
 
     assert isinstance(feats, torch.Tensor)
     assert feats.ndim == 2 and feats.size(1) >= len(agent)
 
     # --- dummy ---
-    # Règle souple : départ très grand OU flags neutres/terminés, selon ton implémentation
     assert feats[0, h.DEPARTURE_TIME] >= 25 * 3600 or feats[0, h.DONE] == 1 or feats[0, h.ON_WAY] == 0
 
-    # --- nombre de trips ---
+    # --- Number of trips ---
     expected = _expected_trips_from_xml(tmp_scenario_dir / "population.xml")
     print(expected)
-    assert feats.shape[0] == len(expected) + 1, f"Attendu {len(expected)} trips + 1 dummy, obtenu {feats.shape[0]} lignes"
-    
-    real_agents = feats[1:]  # on ignore le dummy
+    assert feats.shape[0] == len(expected) + 1, f"Expected {len(expected)} trips + 1 dummy, got {feats.shape[0]} rows"
 
-    """
-    # --- correspondance exacte ---
+    real_agents = feats[1:]  # ignore dummy
 
-    got = [(int(real[i, h.ORIGIN].item()),
-            int(real[i, h.DESTINATION].item()),
-            int(real[i, h.DEPARTURE_TIME].item()))
-           for i in range(real.shape[0])]
-    assert got == expected, f"\nAttendu (ORIGIN, DEST, DEP): {expected}\nObtenu: {got}"
-    """
-    # --- attributs par défaut ---
+    # --- exact correspondence ---
+
+    got = [(int(real_agents[i, h.ORIGIN].item()),
+            int(real_agents[i, h.DESTINATION].item()),
+            int(real_agents[i, h.DEPARTURE_TIME].item()))
+           for i in range(real_agents.shape[0])]
+    assert got == expected, f"\nExpected (ORIGIN, DEST, DEP): {expected}\nGot: {got}"
+
+    # --- default attributes ---
     assert torch.all(real_agents[:, h.SEX] == 0)
     assert torch.all(real_agents[:, h.EMPLOYMENT_STATUS] == 0)
     assert torch.all(real_agents[:, h.AGE] == 20)
 
-    # --- pas de DEP_TIME nul ---
+    # --- no zero DEP_TIME ---
     assert (real_agents[:, h.DEPARTURE_TIME] == 0).sum().item() == 0
