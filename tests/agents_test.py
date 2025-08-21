@@ -26,6 +26,7 @@ class TestAgent:
             num_roads=1,
             adj_matrix=adj,
         )
+        graph.congestion_constant = torch.ones(x.size(0))
         agents.time = 0
         graph.x = agents.insert_agent_into_network(graph, h)
         assert graph.x[0, h.NUMBER_OF_AGENT] == 2
@@ -66,6 +67,7 @@ class TestAgent:
             num_roads=1,
             adj_matrix=adj,
         )
+        graph.congestion_constant = torch.ones(x.size(0))
         agent.time = 0
         graph.x = agent.insert_agent_into_network(graph, h)
         assert graph.x[0, h.NUMBER_OF_AGENT] == 2

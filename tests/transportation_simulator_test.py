@@ -23,3 +23,4 @@ class TestTransportationSimulator:
             steps += 1
         assert simulator.time == start_time + steps * simulator.timestep
         assert simulator.agent.agent_features[1, simulator.agent.DONE] == 1
+        assert simulator.wardrop_gap_values
