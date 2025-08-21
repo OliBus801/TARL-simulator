@@ -2,6 +2,7 @@ from lxml import etree
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
+from torch_geometric.utils import to_networkx
 from src.feature_helpers import FeatureHelpers
 from src.simulation_core_model import SimulationCoreModel
 from src.agents.base import Agents
@@ -13,6 +14,7 @@ import tqdm
 from collections import defaultdict
 import numpy as np
 import os
+import networkx as nx
 
 class TransportationSimulator:
     """
@@ -54,6 +56,7 @@ class TransportationSimulator:
         # Record
         self.leg_histogram_values = []
         self.road_optimality_values = []
+        self.wardrop_gap_values = []
         self.on_way_before = 0
         self.done_before = 0
 
@@ -343,12 +346,94 @@ class TransportationSimulator:
 
         value_on_way = torch.sum(self.agent.agent_features[:, self.agent.ON_WAY])
         value_done = torch.sum(self.agent.agent_features[:, self.agent.DONE])
-        self.leg_histogram_values.append([value_on_way - self.on_way_before + value_done - self.done_before, 
+        self.leg_histogram_values.append([value_on_way - self.on_way_before + value_done - self.done_before,
                                             value_done - self.done_before, value_on_way, self.time])
         self.on_way_before = value_on_way
         self.done_before = value_done
-        
+
         self.road_optimality_values.append((self.time, self.model_core.direction_mpnn.road_optimality_data["delta_travel_time"].cpu()))
+
+        gap = self.compute_wardrop_gap()
+        self.wardrop_gap_values.append((self.time, gap))
+
+    def compute_wardrop_gap(self) -> float:
+        h = self.h if hasattr(self, 'h') else FeatureHelpers(Nmax=self.Nmax)
+        if self.graph is None or self.agent is None:
+            return 0.0
+
+        agent_feats = getattr(self.agent, 'agent_features', None)
+        if agent_feats is None:
+            return 0.0
+
+        on_way = agent_feats[:, self.agent.ON_WAY] > 0
+        agent_ids = torch.nonzero(on_way, as_tuple=False).squeeze(1)
+        if agent_ids.numel() == 0:
+            return 0.0
+
+        x = self.graph.x
+        edge_index = self.graph.edge_index
+
+        x_j = x[edge_index[0]]
+        time_congestion = self.graph.congestion_constant[edge_index[1]] / (
+            x_j[:, h.MAX_NUMBER_OF_AGENT] + 10 - x_j[:, h.NUMBER_OF_AGENT]
+        )
+        time_flow = torch.max(
+            torch.stack((x_j[:, h.FREE_FLOW_TIME_TRAVEL], time_congestion)), dim=0
+        ).values
+
+        # Build edge cost matrix
+        num_nodes = x.size(0)
+        edge_cost = torch.full((num_nodes, num_nodes), float('inf'), device=x.device)
+        edge_cost[edge_index[0], edge_index[1]] = time_flow
+
+        # Build NetworkX graph for shortest paths
+        nx_graph = self.graph.clone()
+        nx_graph.edge_attr = time_flow
+        nx_graph = to_networkx(nx_graph, edge_attrs=["edge_attr"], to_undirected=False)
+        lengths = dict(nx.all_pairs_dijkstra_path_length(nx_graph, weight="edge_attr"))
+        paths = dict(nx.all_pairs_dijkstra_path(nx_graph, weight="edge_attr"))
+
+        length_tensor = torch.full((num_nodes, num_nodes), float('inf'), device=x.device)
+        next_hop = torch.full((num_nodes, num_nodes), -1, dtype=torch.long, device=x.device)
+        for src, dst_dict in lengths.items():
+            for dst, cost in dst_dict.items():
+                length_tensor[src, dst] = cost
+        for src, dst_dict in paths.items():
+            for dst, path in dst_dict.items():
+                next_hop[src, dst] = path[1] if len(path) >= 2 else src
+
+        # Determine current road for each agent
+        num_roads = int(self.graph.num_roads)
+        agent_road = torch.full((agent_feats.size(0),), -1, dtype=torch.long, device=x.device)
+        road_agents = x[:num_roads, h.AGENT_POSITION]
+        road_counts = x[:num_roads, h.NUMBER_OF_AGENT].to(torch.int64)
+        for r in range(num_roads):
+            n = int(road_counts[r])
+            if n > 0:
+                ids = road_agents[r, :n].to(torch.long)
+                agent_road[ids] = r
+
+        roads = agent_road[agent_ids]
+        dests = agent_feats[agent_ids, self.agent.DESTINATION].to(torch.long)
+        selected = x[roads, h.SELECTED_ROAD].to(torch.long)
+
+        valid = (roads >= 0) & (selected >= 0)
+        if not torch.any(valid):
+            return 0.0
+
+        roads = roads[valid]
+        dests = dests[valid]
+        selected = selected[valid]
+
+        c_min = length_tensor[roads, dests]
+        c_sel = edge_cost[roads, selected] + length_tensor[selected, dests]
+
+        mask = torch.isfinite(c_min) & torch.isfinite(c_sel)
+        if not torch.any(mask):
+            return 0.0
+
+        gap = torch.sum(c_sel[mask] - c_min[mask]).item()
+        return gap
 
     def reset(self):
         h = FeatureHelpers(Nmax=self.Nmax)
