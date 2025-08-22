@@ -382,6 +382,70 @@ class TransportationSimulator:
         
         self.road_optimality_values.append((self.time, self.model_core.direction_mpnn.road_optimality_data["delta_travel_time"].cpu()))
 
+    def train_contextual_bandit(self, num_steps: int, cost_head, optimizer, *, max_grad_norm: float = 1.0):
+        """Train a contextual bandit head to predict travel costs.
+
+        Parameters
+        ----------
+        num_steps : int
+            Number of simulation steps to run.
+        cost_head : nn.Module
+            Head predicting contextual costs given features
+            ``[h_v, x_a, x_agent]``.
+        optimizer : torch.optim.Optimizer
+            Optimizer used to update ``cost_head``.
+        max_grad_norm : float, optional
+            Maximum norm for gradient clipping.
+        """
+        h = self.h
+
+        for _ in range(num_steps):
+            # Insert and withdraw agents from the network
+            self.graph.x = self.agent.insert_agent_into_network(self.graph, h)
+            self.graph.x = self.agent.withdraw_agent_from_network(self.graph, h)
+
+            # Initial embedding computation before decisions
+            self.graph = self.model_core(self.graph)
+
+            road_indices = torch.arange(self.graph.num_roads, device=self.device)
+            active = self.graph.x[road_indices, h.NUMBER_OF_AGENT] > 0
+
+            for road in road_indices[active]:
+                agent_id = int(self.graph.x[road, h.HEAD_FIFO].item())
+
+                # Extract outgoing edges for the current road
+                edge_mask = self.graph.edge_index[0] == road
+                dest = self.graph.edge_index[1, edge_mask]
+                if dest.numel() == 0:
+                    continue
+
+                h_v = self.graph.x[road].expand(dest.size(0), -1)
+                x_a = self.graph.edge_attr[edge_mask]
+                x_agent = self.agent.agent_features[agent_id].expand(dest.size(0), -1)
+                features = torch.cat([h_v, x_a, x_agent], dim=-1)
+
+                # Predict contextual costs and sample an action
+                pred_costs = cost_head(features)
+                mask = torch.ones_like(pred_costs, dtype=torch.bool)
+                action_idx = cost_head.sample_action(pred_costs, mask)
+                chosen_road = dest[action_idx]
+
+                # Observe real cost (approx. free-flow travel time)
+                real_cost = self.graph.x[chosen_road, h.FREE_FLOW_TIME_TRAVEL].detach()
+                loss = F.mse_loss(pred_costs[action_idx], real_cost)
+
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(cost_head.parameters(), max_grad_norm)
+                optimizer.step()
+
+                # Update selected road and recompute embeddings
+                self.graph.x[road, h.SELECTED_ROAD] = chosen_road.to(self.graph.x.dtype)
+                self.graph = self.model_core(self.graph)
+
+            # Advance simulation time
+            self.set_time(self.time + self.timestep)
+
     def reset(self):
         h = FeatureHelpers(Nmax=self.Nmax)
         torch.zero_(self.graph.x[:, h.AGENT_POSITION])
