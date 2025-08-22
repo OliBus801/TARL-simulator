@@ -669,6 +669,81 @@ class TransportationSimulator:
         return node_metrics
 
 
+    def plot_daily_counts(self, expected_counts: dict[int, float], output_dir: str | None = "data/outputs"):
+        """Plot simulated vs expected daily counts per link and export a CSV.
+
+        Parameters
+        ----------
+        expected_counts : dict[int, float]
+            Dictionary mapping each road (node) index to the expected hourly
+            flow computed by the user-equilibrium MSA algorithm.
+        output_dir : str, optional
+            Directory where the plot and CSV file will be saved.  If ``None``,
+            the files are not written to disk.
+        """
+        import pandas as pd
+
+        update_history = getattr(self.model_core.response_mpnn, 'update_history', [])
+        if not update_history:
+            print("No update history available for plotting daily counts.")
+            return None
+
+        # --- Aggregate simulated counts per hour ---------------------------------
+        times = torch.tensor([t for t, _ in update_history], dtype=torch.long)
+        mask_matrix = torch.stack([m for _, m in update_history], dim=0)
+        hours = (times // 3600).clamp(min=0)
+        max_hour = int(hours.max().item())
+        num_hours = max_hour + 1
+        hour_onehot = F.one_hot(hours, num_classes=num_hours).to(dtype=torch.long)
+        mask_int = mask_matrix.to(dtype=torch.long)
+        counts_per_hour = hour_onehot.T @ mask_int  # (H, N)
+        counts_per_node = counts_per_hour.T        # (N, H)
+        num_nodes = counts_per_node.size(0)
+
+        # --- Build expected counts matrix ---------------------------------------
+        expected = torch.zeros((num_nodes, num_hours), dtype=torch.float64)
+        for idx, flow in expected_counts.items():
+            if 0 <= idx < num_nodes:
+                expected[idx, :] = float(flow)
+
+        # --- Scatter plot of daily totals --------------------------------------
+        sim_totals = counts_per_node.sum(dim=1)
+        exp_totals = expected.sum(dim=1)
+        road_ids = sorted(expected_counts.keys())
+        x = exp_totals[road_ids].cpu().numpy()
+        y = sim_totals[road_ids].cpu().numpy()
+
+        fig, ax = plt.subplots()
+        ax.scatter(x, y, alpha=0.7)
+        max_val = float(max(x.max() if x.size else 0.0, y.max() if y.size else 0.0))
+        ax.plot([0, max_val], [0, max_val], 'r--', linewidth=1)
+        ax.set_xlabel('Expected daily count')
+        ax.set_ylabel('Simulated daily count')
+        ax.set_title('Daily Link Counts: Expected vs Simulated')
+        fig.tight_layout()
+
+        # --- Save plot and CSV -------------------------------------------------
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            plot_path = os.path.join(output_dir, 'daily_counts.png')
+            fig.savefig(plot_path)
+
+            sim_cols = [f'sim_{h}h' for h in range(num_hours)]
+            exp_cols = [f'exp_{h}h' for h in range(num_hours)]
+            df_sim = pd.DataFrame(counts_per_node.cpu().numpy(), columns=sim_cols)
+            df_exp = pd.DataFrame(expected.cpu().numpy(), columns=exp_cols)
+            df = pd.concat([df_sim, df_exp], axis=1)
+            df['link_id'] = range(num_nodes)
+            df['difference'] = df_sim.sum(axis=1) - df_exp.sum(axis=1)
+            df = df[['link_id'] + sim_cols + exp_cols + ['difference']]
+            csv_path = os.path.join(output_dir, 'daily_counts.csv')
+            df.to_csv(csv_path, index=False)
+            print(f"Daily counts plot saved as {plot_path}")
+            print(f"Daily counts CSV saved as {csv_path}")
+
+        return fig
+
+
     def get_info(self, road_id, h: FeatureHelpers):
 
         road = self.graph.x[road_id]
