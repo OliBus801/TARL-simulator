@@ -40,7 +40,7 @@ def run_episode(
         profiler.enable()
 
     for _ in tqdm(range(steps), desc="Running Simulation", unit="step"):
-        simulator.run()
+        simulator.step()
 
     if profiler is not None:
         profiler.disable()

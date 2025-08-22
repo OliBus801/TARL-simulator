@@ -12,14 +12,14 @@ class TestTransportationSimulator:
     def test_config_core(self, simulator: TransportationSimulator):
         assert isinstance(simulator.model_core, SimulationCoreModel)
 
-    def test_run(self, simulator: TransportationSimulator):
+    def test_step(self, simulator: TransportationSimulator):
         start_time = simulator.time
         steps = 0
         while (
             simulator.agent.agent_features[1, simulator.agent.DONE] == 0
             and steps < 20
         ):
-            simulator.run()
+            simulator.step()
             steps += 1
         assert simulator.time == start_time + steps * simulator.timestep
         assert simulator.agent.agent_features[1, simulator.agent.DONE] == 1

@@ -323,7 +323,7 @@ class TransportationSimulator:
         self.agent.set_time(time)
         self.model_core.set_time(time)
 
-    def run(self):
+    def step(self):
         h = FeatureHelpers(Nmax=self.Nmax)
 
         
@@ -354,23 +354,8 @@ class TransportationSimulator:
         self.graph = self.model_core(self.graph)
         e = time.time()
         self.core_time += e-b
-        """
-        # This is broken and maybe not even useful.
-        i = 0
-        while torch.any(old_positions != self.graph.x[:, h.NUMBER_OF_AGENT]) and i < 5:
-            # Compute the direction of the agents
-            b = e
-            self.graph = self.agent.choice(self.graph, h)
-            e = time.time()
-            self.choice_time += e-b
 
-            # Run the core model
-            b = e
-            self.graph = self.model_core(self.graph)
-            e = time.time()
-            self.core_time += e-b
-            i+=1 
-        """
+        # Update the time
         self.set_time(self.time + self.timestep)
 
         value_on_way = torch.sum(self.agent.agent_features[:, self.agent.ON_WAY])
