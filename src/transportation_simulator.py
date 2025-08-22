@@ -452,6 +452,14 @@ class TransportationSimulator:
         torch.zero_(self.graph.x[:, h.AGENT_TIME_DEPARTURE])
         torch.zero_(self.graph.x[:, h.AGENT_TIME_ARRIVAL])
         torch.zero_(self.graph.x[:, h.NUMBER_OF_AGENT])
+
+        # Reset Record
+        self.leg_histogram_values = []
+        self.road_optimality_values = []
+        self.on_way_before = 0
+        self.done_before = 0
+        self.model_core.response_mpnn.update_history = []
+
         
     def state(self):
         h = FeatureHelpers(Nmax=self.Nmax)

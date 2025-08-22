@@ -68,6 +68,7 @@ class Runner:
             self.value_net = MPNNValueNetSimple(edge_index, num_nodes, device=str(self.device))
             self.value_net.load(self.args.scenario)
             self.env.simulator.agent = self.policy_net
+
         elif self.args.algo == "contextual-bandit":
             from .contextual_cost_head import ContextualCostHead
 
@@ -118,14 +119,12 @@ class Runner:
                 )
                 self.agent.set_time(self.args.start_end_time[0])
 
-                # Reset histories
-                if hasattr(self.simulator.model_core.response_mpnn, "update_history"):
-                    self.simulator.model_core.response_mpnn.update_history = []
-                self.agent.withdraw_history = []
-                self.simulator.leg_histogram_values = []
-                self.simulator.road_optimality_values = []
-                self.simulator.on_way_before = 0
-                self.simulator.done_before = 0
+                self.simulator.reset()
+                self.agent.reset()
+                self.simulator.config_parameters(
+                    start_time=self.args.start_end_time[0],
+                )
+                self.agent.set_time(self.args.start_end_time[0])
 
                 self.simulator.train_contextual_bandit(
                     n_timesteps, self.cost_head, self.optimizer
@@ -144,6 +143,7 @@ class Runner:
                     dtype=torch.float64,
                 )
                 rmse = torch.sqrt(torch.mean((sim - exp) ** 2)).item()
+                print(f"{'RMSE demand:':25} {rmse:10.4f}")
                 wandb.log({"rmse_demand": rmse, "epoch": epoch + 1})
                 pbar.set_postfix(rmse=rmse)
 

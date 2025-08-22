@@ -9,7 +9,7 @@ class ContextualCostHead(nn.Module):
     Parameters
     ----------
     input_dim : int
-        Dimension of concatenated features :math:`[h_v \oplus x_a \oplus x_{agent}]`.
+        Dimension of concatenated features.
     hidden_dim : int, optional
         Hidden dimension of intermediate layers.
     num_layers : int, optional
@@ -44,7 +44,7 @@ class ContextualCostHead(nn.Module):
         Returns
         -------
         torch.Tensor
-            Predicted cost :math:`\hat c` for each edge.
+            Predicted cost :math:`hat c` for each edge.
         """
         return self.mlp(features).squeeze(-1)
 
