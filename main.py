@@ -29,6 +29,11 @@ def main(argv=None):
         action="store_true",
         help="Enable torch.compile for MPNN models",
     )
+    parser.add_argument(
+        "--wandb",
+        action="store_true",
+        help="Enable logging to Weights & Biases",
+    )
     args = parser.parse_args(argv)
 
     runner = Runner(RunnerArgs(**vars(args)))
