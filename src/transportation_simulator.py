@@ -683,14 +683,17 @@ class TransportationSimulator:
         """
         import pandas as pd
 
+        # Retrieve the collected data from the model core and agent withdrawals 
         update_history = getattr(self.model_core.response_mpnn, 'update_history', [])
-        if not update_history:
-            print("No update history available for plotting daily counts.")
-            return None
+        withdraw_history = getattr(self.agent, 'withdraw_history', [])
+        combined_history = update_history + withdraw_history
+        if not combined_history:
+            print("No update history available for computing node metrics.")
+            return {}
 
         # --- Aggregate simulated counts per hour ---------------------------------
-        times = torch.tensor([t for t, _ in update_history], dtype=torch.long)
-        mask_matrix = torch.stack([m for _, m in update_history], dim=0)
+        times = torch.tensor([t for t, _ in combined_history], dtype=torch.long)
+        mask_matrix = torch.stack([m for _, m in combined_history], dim=0)
         hours = (times // 3600).clamp(min=0)
         max_hour = int(hours.max().item())
         num_hours = max_hour + 1
@@ -700,17 +703,17 @@ class TransportationSimulator:
         counts_per_node = counts_per_hour.T        # (N, H)
         num_nodes = counts_per_node.size(0)
 
-        # --- Build expected counts matrix ---------------------------------------
-        expected = torch.zeros((num_nodes, num_hours), dtype=torch.float64)
+        # --- Build expected counts vector ---------------------------------------
+        sim_totals = counts_per_node.sum(dim=1)  # simulated total per link
+        # expected_counts est déjà la somme attendue par lien pour la journée
+        num_nodes = sim_totals.size(0)
+        expected_vec = torch.zeros(num_nodes, dtype=torch.float64)
         for idx, flow in expected_counts.items():
             if 0 <= idx < num_nodes:
-                expected[idx, :] = float(flow)
+                expected_vec[idx] = float(flow)
 
-        # --- Scatter plot of daily totals --------------------------------------
-        sim_totals = counts_per_node.sum(dim=1)
-        exp_totals = expected.sum(dim=1)
         road_ids = sorted(expected_counts.keys())
-        x = exp_totals[road_ids].cpu().numpy()
+        x = expected_vec[road_ids].cpu().numpy()
         y = sim_totals[road_ids].cpu().numpy()
 
         fig, ax = plt.subplots()
@@ -728,14 +731,13 @@ class TransportationSimulator:
             plot_path = os.path.join(output_dir, 'daily_counts.png')
             fig.savefig(plot_path)
 
-            sim_cols = [f'sim_{h}h' for h in range(num_hours)]
-            exp_cols = [f'exp_{h}h' for h in range(num_hours)]
-            df_sim = pd.DataFrame(counts_per_node.cpu().numpy(), columns=sim_cols)
-            df_exp = pd.DataFrame(expected.cpu().numpy(), columns=exp_cols)
-            df = pd.concat([df_sim, df_exp], axis=1)
-            df['link_id'] = range(num_nodes)
-            df['difference'] = df_sim.sum(axis=1) - df_exp.sum(axis=1)
-            df = df[['link_id'] + sim_cols + exp_cols + ['difference']]
+            # Génère le CSV avec les colonnes demandées
+            df = pd.DataFrame({
+                'link_id': road_ids,
+                'simulated': [sim_totals[i].item() for i in road_ids],
+                'expected': [expected_vec[i].item() for i in road_ids],
+                'difference': [sim_totals[i].item() - expected_vec[i].item() for i in road_ids],
+            })
             csv_path = os.path.join(output_dir, 'daily_counts.csv')
             df.to_csv(csv_path, index=False)
             print(f"Daily counts plot saved as {plot_path}")
