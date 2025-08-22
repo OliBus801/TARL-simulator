@@ -5,6 +5,7 @@ import torch
 from .reinforcement_learning import SimulatorEnv
 from .transportation_simulator import TransportationSimulator
 from .agents.base import Agents, DijkstraAgents
+from .algorithms.user_equilibrium_msa import run_msa
 
 @dataclass
 class RunnerArgs:
@@ -169,6 +170,8 @@ class Runner:
             self.simulator.compute_node_metrics(self.args.output_dir)
             self.simulator.plot_leg_histogram(self.args.output_dir)
             self.simulator.plot_road_optimality(self.args.output_dir)
+            expected_demand = run_msa(self.simulator.graph, self.agent)
+            self.simulator.plot_daily_counts(expected_demand, self.args.output_dir)
 
 
         else:
@@ -219,3 +222,5 @@ class Runner:
             self.env.simulator.compute_node_metrics(self.args.output_dir)
             self.env.simulator.plot_leg_histogram(self.args.output_dir)
             self.env.simulator.plot_road_optimality(self.args.output_dir)
+            expected_demand = run_msa(self.env.simulator.graph, self.env.simulator.agent)
+            self.env.simulator.plot_daily_counts(expected_demand, self.args.output_dir)
