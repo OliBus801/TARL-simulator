@@ -293,9 +293,6 @@ class SimulatorEnv(EnvBase):
             )
         )
 
-        gap = self.simulator.compute_wardrop_gap()
-        self.simulator.wardrop_gap_values.append((self.simulator.time, gap))
-
         # Compute the next state
         node_features, edge_features, edge_index, agent_index = self.simulator.state()
         terminated = done
