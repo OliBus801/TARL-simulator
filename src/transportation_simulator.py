@@ -13,6 +13,7 @@ import tqdm
 from collections import defaultdict
 import numpy as np
 import os
+import heapq
 
 class TransportationSimulator:
     """
@@ -209,6 +210,35 @@ class TransportationSimulator:
             x[:, h.MAX_NUMBER_OF_AGENT] + 10 - critical_number
         )
 
+        # Pre-compute Dijkstra distances from every node to each destination
+        dest_indices = sorted(dest for (_, dest) in intersection_indices.values())
+        edge_weights = x[edge_index[1], h.FREE_FLOW_TIME_TRAVEL].clone()
+        edge_weights[edge_index[1] >= num_roads] = 0.0
+
+        # Build reversed adjacency list: for each node, list of incoming neighbours
+        rev_adj = [[] for _ in range(num_nodes)]
+        for (u, v), w in zip(edge_index.t().tolist(), edge_weights.tolist()):
+            rev_adj[v].append((u, w))
+
+        def _dijkstra(start: int) -> list[float]:
+            dist = [float("inf")] * num_nodes
+            dist[start] = 0.0
+            heap = [(0.0, start)]
+            while heap:
+                d, node = heapq.heappop(heap)
+                if d > dist[node]:
+                    continue
+                for neigh, weight in rev_adj[node]:
+                    nd = d + weight
+                    if nd < dist[neigh]:
+                        dist[neigh] = nd
+                        heapq.heappush(heap, (nd, neigh))
+            return dist
+
+        dist_list = [torch.tensor(_dijkstra(dest), dtype=torch.float32) for dest in dest_indices]
+        dijkstra_dist = torch.stack(dist_list, dim=1)
+        delta_h = dijkstra_dist[edge_index[0]] - dijkstra_dist[edge_index[1]]
+
         # Creating the PyG Graph object
         self.graph = Data(
             x=x,
@@ -221,6 +251,8 @@ class TransportationSimulator:
             src_adj=src_adj,
             critical_number=critical_number,
             congestion_constant=congestion_constant,
+            dijkstra_dist=dijkstra_dist,
+            delta_h=delta_h,
         ).to(self.device)
 
         # Print the execution time
