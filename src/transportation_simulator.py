@@ -398,7 +398,6 @@ class TransportationSimulator:
             Maximum norm for gradient clipping.
         """
         h = self.h
-        print("\n" + "=" * 10 + " 🚀 Starting Simulation" + "=" * 10)
         for _ in tqdm.tqdm(range(num_steps), desc="Simulation Steps"):
             # Insert and withdraw agents from the network
             self.graph.x = self.agent.insert_agent_into_network(self.graph, h)

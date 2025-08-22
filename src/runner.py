@@ -121,6 +121,7 @@ class Runner:
                 )
                 self.agent.set_time(self.args.start_end_time[0])
 
+                print("\n" + "=" * 10 + f" 🚀 Starting Simulation | Epoch #{epoch + 1} " + "=" * 10)
                 self.simulator.train_contextual_bandit(
                     n_timesteps, self.cost_head, self.optimizer
                 )
@@ -138,7 +139,6 @@ class Runner:
                     dtype=torch.float64,
                 )
                 rmse = torch.sqrt(torch.mean((sim - exp) ** 2)).item()
-                print(f"\n📊 {'RMSE demand':<20} → {rmse:>10.4f}\n")
                 if self.args.wandb:
                     wandb.log({"rmse_demand": rmse, "epoch": epoch + 1})
                 pbar.set_postfix(rmse=rmse)
