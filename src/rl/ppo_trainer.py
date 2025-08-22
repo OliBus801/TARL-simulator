@@ -114,11 +114,6 @@ def ppo_train(env, policy_module, value_module, *, total_frames=128, frames_per_
                 writer.add_figure(f"{prefix}/road_optimality_graph", fig, global_step)
                 import matplotlib.pyplot as plt
                 plt.close(fig)
-            fig = sim.plot_wardrop_gap(output_dir=None)
-            if fig is not None:
-                writer.add_figure(f"{prefix}/wardrop_gap", fig, global_step)
-                import matplotlib.pyplot as plt
-                plt.close(fig)
             # Node metrics
             try:
                 node_metrics = sim.compute_node_metrics(output_dir=None)

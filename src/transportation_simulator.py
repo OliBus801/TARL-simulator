@@ -598,39 +598,6 @@ class TransportationSimulator:
 
         return fig
 
-    def plot_wardrop_gap(self, output_dir: str | None = "data/outputs"):
-        """
-        Plot the Wardrop gap over time.
-
-        Parameters
-        ----------
-        output_dir : str
-            Directory to save the plot if not None.
-        ----------
-        """
-
-        if not self.wardrop_gap_values:
-            print("No Wardrop gap data available for plotting.")
-            return None
-
-        times = torch.tensor([t for t, _ in self.wardrop_gap_values], dtype=torch.float32)
-        gaps = torch.tensor([g for _, g in self.wardrop_gap_values], dtype=torch.float32)
-
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(times.div(3600).detach().cpu().numpy(), gaps.detach().cpu().numpy())
-        ax.set_xlabel("Time (h)")
-        ax.set_ylabel("Wardrop Gap")
-        ax.set_title("Wardrop Gap Over Time")
-        fig.tight_layout()
-
-        if output_dir is not None:
-            filename = "wardrop_gap.png"
-            os.makedirs(output_dir, exist_ok=True)
-            fig.savefig(os.path.join(output_dir, filename))
-            print("Wardrop gap plot saved as", filename)
-
-        return fig
-
     def plot_computation_time(self, output_dir: str = "data/outputs"):
         """
         Plot the computation time for different phases of the simulation in a pie chart.

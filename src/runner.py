@@ -169,7 +169,6 @@ class Runner:
             self.simulator.compute_node_metrics(self.args.output_dir)
             self.simulator.plot_leg_histogram(self.args.output_dir)
             self.simulator.plot_road_optimality(self.args.output_dir)
-            self.simulator.plot_wardrop_gap(self.args.output_dir)
 
 
         else:
@@ -220,4 +219,3 @@ class Runner:
             self.env.simulator.compute_node_metrics(self.args.output_dir)
             self.env.simulator.plot_leg_histogram(self.args.output_dir)
             self.env.simulator.plot_road_optimality(self.args.output_dir)
-            self.env.simulator.plot_wardrop_gap(self.args.output_dir)

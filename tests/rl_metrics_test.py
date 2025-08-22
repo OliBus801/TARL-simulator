@@ -52,8 +52,6 @@ def test_rl_training_and_evaluation_collect_metrics(monkeypatch, simple_network_
     assert eval_env.simulator.leg_histogram_values
     assert eval_env.simulator.road_optimality_values
     assert eval_env.simulator.wardrop_gap_values
-    fig = eval_env.simulator.plot_wardrop_gap(output_dir=None)
-    assert fig is not None
     total_time = (
         eval_env.simulator.inserting_time + eval_env.simulator.core_time + eval_env.simulator.withdraw_time
     )
