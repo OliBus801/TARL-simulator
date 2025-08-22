@@ -68,10 +68,88 @@ class Runner:
             self.value_net = MPNNValueNetSimple(edge_index, num_nodes, device=str(self.device))
             self.value_net.load(self.args.scenario)
             self.env.simulator.agent = self.policy_net
+        elif self.args.algo == "contextual-bandit":
+            from .contextual_cost_head import ContextualCostHead
+
+            self.simulator = TransportationSimulator(self.device, torch_compile=self.args.torch_compile)
+            self.agent = Agents(self.device)
+
+            self.simulator.load_network(scenario=self.args.scenario)
+            self.agent.load(scenario=self.args.scenario)
+            self.simulator.config_parameters(
+                timestep_size=self.args.timestep_size,
+                start_time=self.args.start_end_time[0],
+            )
+            self.agent.set_time(self.args.start_end_time[0])
+
+            input_dim = (
+                int(self.simulator.graph.x.size(1))
+                + int(self.simulator.graph.edge_attr.size(1))
+                + int(self.agent.agent_features.size(1))
+            )
+            self.cost_head = ContextualCostHead(input_dim).to(self.device)
+            self.optimizer = torch.optim.Adam(self.cost_head.parameters(), lr=1e-3)
+            self.expected_demand = run_msa(self.simulator.graph, self.agent)
         else:
             raise ValueError(f"Unknown algorithm {self.args.algo}")
 
     def train(self):
+        if self.args.algo == "contextual-bandit":
+            if self.args.mode != "train":
+                raise RuntimeError("Training is only supported in 'train' mode")
+
+            from tqdm import tqdm
+            import wandb
+
+            wandb.init(project="tarl-simulator", name="contextual-bandit")
+
+            n_timesteps = (
+                self.args.start_end_time[1] - self.args.start_end_time[0]
+            ) // self.args.timestep_size
+
+            pbar = tqdm(range(self.args.epochs), desc="Contextual Bandit")
+            for epoch in pbar:
+                # Reload network and agents to reset state
+                self.simulator.load_network(scenario=self.args.scenario)
+                self.agent.load(scenario=self.args.scenario)
+                self.simulator.config_parameters(
+                    timestep_size=self.args.timestep_size,
+                    start_time=self.args.start_end_time[0],
+                )
+                self.agent.set_time(self.args.start_end_time[0])
+
+                # Reset histories
+                if hasattr(self.simulator.model_core.response_mpnn, "update_history"):
+                    self.simulator.model_core.response_mpnn.update_history = []
+                self.agent.withdraw_history = []
+                self.simulator.leg_histogram_values = []
+                self.simulator.road_optimality_values = []
+                self.simulator.on_way_before = 0
+                self.simulator.done_before = 0
+
+                self.simulator.train_contextual_bandit(
+                    n_timesteps, self.cost_head, self.optimizer
+                )
+
+                node_metrics = self.simulator.compute_node_metrics(output_dir=None)
+                sim_counts = {
+                    idx: sum(m["hourly_counts"]) for idx, m in node_metrics.items()
+                }
+                exp = torch.tensor(
+                    [self.expected_demand.get(i, 0.0) for i in self.expected_demand.keys()],
+                    dtype=torch.float64,
+                )
+                sim = torch.tensor(
+                    [sim_counts.get(i, 0.0) for i in self.expected_demand.keys()],
+                    dtype=torch.float64,
+                )
+                rmse = torch.sqrt(torch.mean((sim - exp) ** 2)).item()
+                wandb.log({"rmse_demand": rmse, "epoch": epoch + 1})
+                pbar.set_postfix(rmse=rmse)
+
+            wandb.finish()
+            return
+
         if not (self.args.algo == "mpnn+ppo" and self.args.mode == "train"):
             raise RuntimeError("Training is only supported for algo 'mpnn+ppo'")
 
@@ -173,6 +251,110 @@ class Runner:
             expected_demand = run_msa(self.simulator.graph, self.agent)
             self.simulator.plot_daily_counts(expected_demand, self.args.output_dir)
 
+        elif self.args.algo == "contextual-bandit":
+            self.simulator.load_network(scenario=self.args.scenario)
+            self.agent.load(scenario=self.args.scenario)
+            self.simulator.config_parameters(
+                timestep_size=self.args.timestep_size,
+                start_time=self.args.start_end_time[0],
+            )
+            self.agent.set_time(self.args.start_end_time[0])
+            if hasattr(self.simulator.model_core.response_mpnn, "update_history"):
+                self.simulator.model_core.response_mpnn.update_history = []
+            self.agent.withdraw_history = []
+            self.simulator.leg_histogram_values = []
+            self.simulator.road_optimality_values = []
+            self.simulator.on_way_before = 0
+            self.simulator.done_before = 0
+
+            h = self.simulator.h
+            for _ in range(n_timesteps):
+                self.simulator.graph.x = self.agent.insert_agent_into_network(
+                    self.simulator.graph, h
+                )
+                self.simulator.graph.x = self.agent.withdraw_agent_from_network(
+                    self.simulator.graph, h
+                )
+                self.simulator.graph = self.simulator.model_core(self.simulator.graph)
+
+                road_indices = torch.arange(self.simulator.graph.num_roads, device=self.device)
+                active = self.simulator.graph.x[road_indices, h.NUMBER_OF_AGENT] > 0
+                for road in road_indices[active]:
+                    agent_id = int(self.simulator.graph.x[road, h.HEAD_FIFO].item())
+                    edge_mask = self.simulator.graph.edge_index[0] == road
+                    dest = self.simulator.graph.edge_index[1, edge_mask]
+                    if dest.numel() == 0:
+                        continue
+                    h_v = self.simulator.graph.x[road].expand(dest.size(0), -1)
+                    x_a = self.simulator.graph.edge_attr[edge_mask]
+                    x_agent = self.agent.agent_features[agent_id].expand(dest.size(0), -1)
+                    features = torch.cat([h_v, x_a, x_agent], dim=-1)
+                    pred_costs = self.cost_head(features)
+                    mask = torch.ones_like(pred_costs, dtype=torch.bool)
+                    action_idx = self.cost_head.sample_action(pred_costs, mask)
+                    chosen_road = dest[action_idx]
+                    self.simulator.graph.x[road, h.SELECTED_ROAD] = chosen_road.to(
+                        self.simulator.graph.x.dtype
+                    )
+                    self.simulator.graph = self.simulator.model_core(self.simulator.graph)
+
+                self.simulator.set_time(self.simulator.time + self.simulator.timestep)
+
+                value_on_way = torch.sum(
+                    self.agent.agent_features[:, self.agent.ON_WAY]
+                )
+                value_done = torch.sum(
+                    self.agent.agent_features[:, self.agent.DONE]
+                )
+                self.simulator.leg_histogram_values.append(
+                    [
+                        value_on_way
+                        - self.simulator.on_way_before
+                        + value_done
+                        - self.simulator.done_before,
+                        value_done - self.simulator.done_before,
+                        value_on_way,
+                        self.simulator.time,
+                    ]
+                )
+                self.simulator.on_way_before = value_on_way
+                self.simulator.done_before = value_done
+                self.simulator.road_optimality_values.append(
+                    (
+                        self.simulator.time,
+                        self.simulator.model_core.direction_mpnn.road_optimality_data[
+                            "delta_travel_time"
+                        ].cpu(),
+                    )
+                )
+
+            mask = self.agent.agent_features[:, self.agent.DONE] == 1
+            average_travel = torch.mean(
+                self.agent.agent_features[mask, self.agent.ARRIVAL_TIME]
+                - self.agent.agent_features[mask, self.agent.DEPARTURE_TIME]
+            )
+            print("\n=== Simulation Summary ===")
+            print(f"{'Average travel time:':25} {average_travel.item():10.2f} s")
+            print(f"{'Agent Insertion time:':25} {self.simulator.inserting_time:10.2f} s")
+            print(f"{'Route Choice time:':25} {self.simulator.choice_time:10.2f} s")
+            print(f"{'Core Model time:':25} {self.simulator.core_time:10.2f} s")
+            print(f"{'Agent Withdrawal time:':25} {self.simulator.withdraw_time:10.2f} s")
+            print("-" * 42)
+            total_time = (
+                self.simulator.inserting_time
+                + self.simulator.choice_time
+                + self.simulator.core_time
+                + self.simulator.withdraw_time
+            )
+            print(f"{'Total simulation time:':25} {total_time:10.2f} s")
+
+            print("\n=== Computing Metrics... ===")
+            self.simulator.plot_computation_time(self.args.output_dir)
+            self.simulator.compute_node_metrics(self.args.output_dir)
+            self.simulator.plot_leg_histogram(self.args.output_dir)
+            self.simulator.plot_road_optimality(self.args.output_dir)
+            expected_demand = run_msa(self.simulator.graph, self.agent)
+            self.simulator.plot_daily_counts(expected_demand, self.args.output_dir)
 
         else:
             from tensordict.nn import TensorDictModule

@@ -5,7 +5,11 @@ from src.runner import Runner, RunnerArgs
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Unified runner for classical and RL experiments")
-    parser.add_argument("--algo", choices=["dijkstra", "random", "mpnn", "mpnn+ppo"], default="dijkstra")
+    parser.add_argument(
+        "--algo",
+        choices=["dijkstra", "random", "mpnn", "mpnn+ppo", "contextual-bandit"],
+        default="dijkstra",
+    )
     parser.add_argument("--scenario", type=str, default="Easy", help="Scenario to run. Only give prefix, e.g., 'Easy' for 'Easy_network.xml.gz' and 'Easy_population.xml.gz'")
     parser.add_argument("--mode", choices=["eval", "train"], default="eval")
     parser.add_argument("--timestep_size", type=int, default=1, help="Size of each simulation step in seconds")
