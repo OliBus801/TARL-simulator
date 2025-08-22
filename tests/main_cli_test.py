@@ -36,3 +36,19 @@ def test_mpnn_eval(monkeypatch):
     monkeypatch.setattr(Runner, "eval", fake_eval)
     main(["--algo", "mpnn", "--mode", "eval"])
     assert calls == ["setup", "eval"]
+
+
+def test_wandb_flag(monkeypatch):
+    captured = {}
+
+    def fake_init(self, args):
+        captured["wandb"] = args.wandb
+        self.args = args
+
+    monkeypatch.setattr(Runner, "__init__", fake_init)
+    monkeypatch.setattr(Runner, "setup", lambda self: None)
+    monkeypatch.setattr(Runner, "eval", lambda self: None)
+
+    main(["--algo", "dijkstra", "--mode", "eval", "--wandb"])
+
+    assert captured["wandb"] is True

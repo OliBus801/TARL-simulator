@@ -21,6 +21,7 @@ class RunnerArgs:
     output_dir: str = "runs"
     profile: bool = False
     torch_compile: bool = False
+    wandb: bool = False
 
 
 class Runner:
@@ -100,9 +101,9 @@ class Runner:
                 raise RuntimeError("Training is only supported in 'train' mode")
 
             from tqdm import tqdm
-            import wandb
-
-            wandb.init(project="tarl-simulator", name="contextual-bandit")
+            if self.args.wandb:
+                import wandb
+                wandb.init(project="tarl-simulator", name="contextual-bandit")
 
             n_timesteps = (
                 self.args.start_end_time[1] - self.args.start_end_time[0]
@@ -144,10 +145,12 @@ class Runner:
                 )
                 rmse = torch.sqrt(torch.mean((sim - exp) ** 2)).item()
                 print(f"{'RMSE demand:':25} {rmse:10.4f}")
-                wandb.log({"rmse_demand": rmse, "epoch": epoch + 1})
+                if self.args.wandb:
+                    wandb.log({"rmse_demand": rmse, "epoch": epoch + 1})
                 pbar.set_postfix(rmse=rmse)
 
-            wandb.finish()
+            if self.args.wandb:
+                wandb.finish()
             return
 
         if not (self.args.algo == "mpnn+ppo" and self.args.mode == "train"):
