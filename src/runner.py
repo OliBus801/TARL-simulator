@@ -6,6 +6,7 @@ from .reinforcement_learning import SimulatorEnv
 from .transportation_simulator import TransportationSimulator
 from .agents.base import Agents, DijkstraAgents
 from .algorithms.user_equilibrium_msa import run_msa
+from tqdm import tqdm
 
 @dataclass
 class RunnerArgs:
@@ -83,6 +84,7 @@ class Runner:
                 start_time=self.args.start_end_time[0],
             )
             self.agent.set_time(self.args.start_end_time[0])
+            self.simulator.agent = self.agent
 
             input_dim = (
                 int(self.simulator.graph.x.size(1))
@@ -100,7 +102,6 @@ class Runner:
             if self.args.mode != "train":
                 raise RuntimeError("Training is only supported in 'train' mode")
 
-            from tqdm import tqdm
             if self.args.wandb:
                 import wandb
                 wandb.init(project="tarl-simulator", name="contextual-bandit")
@@ -110,16 +111,9 @@ class Runner:
             ) // self.args.timestep_size
 
             pbar = tqdm(range(self.args.epochs), desc="Contextual Bandit")
+            print("\n" + "=" * 10 + " 🏋️ Starting Training " + "=" * 10)
             for epoch in pbar:
-                # Reload network and agents to reset state
-                self.simulator.load_network(scenario=self.args.scenario)
-                self.agent.load(scenario=self.args.scenario)
-                self.simulator.config_parameters(
-                    timestep_size=self.args.timestep_size,
-                    start_time=self.args.start_end_time[0],
-                )
-                self.agent.set_time(self.args.start_end_time[0])
-
+                # Reset network and agents state
                 self.simulator.reset()
                 self.agent.reset()
                 self.simulator.config_parameters(
@@ -144,7 +138,7 @@ class Runner:
                     dtype=torch.float64,
                 )
                 rmse = torch.sqrt(torch.mean((sim - exp) ** 2)).item()
-                print(f"{'RMSE demand:':25} {rmse:10.4f}")
+                print(f"\n📊 {'RMSE demand':<20} → {rmse:>10.4f}\n")
                 if self.args.wandb:
                     wandb.log({"rmse_demand": rmse, "epoch": epoch + 1})
                 pbar.set_postfix(rmse=rmse)
@@ -255,31 +249,26 @@ class Runner:
             self.simulator.plot_daily_counts(expected_demand, self.args.output_dir)
 
         elif self.args.algo == "contextual-bandit":
-            self.simulator.load_network(scenario=self.args.scenario)
-            self.agent.load(scenario=self.args.scenario)
+
+            # Reset the env for evaluation
+            self.simulator.reset()
+            self.agent.reset()
             self.simulator.config_parameters(
-                timestep_size=self.args.timestep_size,
                 start_time=self.args.start_end_time[0],
             )
             self.agent.set_time(self.args.start_end_time[0])
-            if hasattr(self.simulator.model_core.response_mpnn, "update_history"):
-                self.simulator.model_core.response_mpnn.update_history = []
-            self.agent.withdraw_history = []
-            self.simulator.leg_histogram_values = []
-            self.simulator.road_optimality_values = []
-            self.simulator.on_way_before = 0
-            self.simulator.done_before = 0
 
             h = self.simulator.h
-            for _ in range(n_timesteps):
+            print("\n" + "=" * 10 + " 📈 Starting Evaluation " + "=" * 10 + "\n")
+            for _ in tqdm(range(n_timesteps), desc="Evaluating Contextual Bandit"):
                 self.simulator.graph.x = self.agent.insert_agent_into_network(
                     self.simulator.graph, h
                 )
                 self.simulator.graph.x = self.agent.withdraw_agent_from_network(
                     self.simulator.graph, h
                 )
-                self.simulator.graph = self.simulator.model_core(self.simulator.graph)
 
+                # Choice
                 road_indices = torch.arange(self.simulator.graph.num_roads, device=self.device)
                 active = self.simulator.graph.x[road_indices, h.NUMBER_OF_AGENT] > 0
                 for road in road_indices[active]:
@@ -299,7 +288,8 @@ class Runner:
                     self.simulator.graph.x[road, h.SELECTED_ROAD] = chosen_road.to(
                         self.simulator.graph.x.dtype
                     )
-                    self.simulator.graph = self.simulator.model_core(self.simulator.graph)
+
+                self.simulator.graph = self.simulator.model_core(self.simulator.graph)
 
                 self.simulator.set_time(self.simulator.time + self.simulator.timestep)
 
@@ -353,7 +343,21 @@ class Runner:
 
             print("\n=== Computing Metrics... ===")
             self.simulator.plot_computation_time(self.args.output_dir)
-            self.simulator.compute_node_metrics(self.args.output_dir)
+            node_metrics = self.simulator.compute_node_metrics(self.args.output_dir)
+            # Write RMSE
+            sim_counts = {
+                idx: sum(m["hourly_counts"]) for idx, m in node_metrics.items()
+            }
+            exp = torch.tensor(
+                [self.expected_demand.get(i, 0.0) for i in self.expected_demand.keys()],
+                dtype=torch.float64,
+            )
+            sim = torch.tensor(
+                [sim_counts.get(i, 0.0) for i in self.expected_demand.keys()],
+                dtype=torch.float64,
+            )
+            rmse = torch.sqrt(torch.mean((sim - exp) ** 2)).item()
+            print(f"\n📊 {'RMSE demand':<20} → {rmse:>10.4f}\n")
             self.simulator.plot_leg_histogram(self.args.output_dir)
             self.simulator.plot_road_optimality(self.args.output_dir)
             expected_demand = run_msa(self.simulator.graph, self.agent)

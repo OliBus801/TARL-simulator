@@ -501,7 +501,6 @@ class Agents(AgentFeatureHelpers):
         self.agent_features[:, self.ON_WAY] = 0.0
         self.agent_features[:, self.DONE] = 0.0
         self.withdraw_history = []
-
         
 
     def set_time(self, time):
