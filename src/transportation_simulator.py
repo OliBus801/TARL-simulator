@@ -669,6 +669,83 @@ class TransportationSimulator:
         return node_metrics
 
 
+    def plot_daily_counts(self, expected_counts: dict[int, float], output_dir: str | None = "data/outputs"):
+        """Plot simulated vs expected daily counts per link and export a CSV.
+
+        Parameters
+        ----------
+        expected_counts : dict[int, float]
+            Dictionary mapping each road (node) index to the expected hourly
+            flow computed by the user-equilibrium MSA algorithm.
+        output_dir : str, optional
+            Directory where the plot and CSV file will be saved.  If ``None``,
+            the files are not written to disk.
+        """
+        import pandas as pd
+
+        # Retrieve the collected data from the model core and agent withdrawals 
+        update_history = getattr(self.model_core.response_mpnn, 'update_history', [])
+        withdraw_history = getattr(self.agent, 'withdraw_history', [])
+        combined_history = update_history + withdraw_history
+        if not combined_history:
+            print("No update history available for computing node metrics.")
+            return {}
+
+        # --- Aggregate simulated counts per hour ---------------------------------
+        times = torch.tensor([t for t, _ in combined_history], dtype=torch.long)
+        mask_matrix = torch.stack([m for _, m in combined_history], dim=0)
+        hours = (times // 3600).clamp(min=0)
+        max_hour = int(hours.max().item())
+        num_hours = max_hour + 1
+        hour_onehot = F.one_hot(hours, num_classes=num_hours).to(dtype=torch.long)
+        mask_int = mask_matrix.to(dtype=torch.long)
+        counts_per_hour = hour_onehot.T @ mask_int  # (H, N)
+        counts_per_node = counts_per_hour.T        # (N, H)
+        num_nodes = counts_per_node.size(0)
+
+        # --- Build expected counts vector ---------------------------------------
+        sim_totals = counts_per_node.sum(dim=1)  # simulated total per link
+        # expected_counts est déjà la somme attendue par lien pour la journée
+        num_nodes = sim_totals.size(0)
+        expected_vec = torch.zeros(num_nodes, dtype=torch.float64)
+        for idx, flow in expected_counts.items():
+            if 0 <= idx < num_nodes:
+                expected_vec[idx] = float(flow)
+
+        road_ids = sorted(expected_counts.keys())
+        x = expected_vec[road_ids].cpu().numpy()
+        y = sim_totals[road_ids].cpu().numpy()
+
+        fig, ax = plt.subplots()
+        ax.scatter(x, y, alpha=0.7)
+        max_val = float(max(x.max() if x.size else 0.0, y.max() if y.size else 0.0))
+        ax.plot([0, max_val], [0, max_val], 'r--', linewidth=1)
+        ax.set_xlabel('Expected daily count')
+        ax.set_ylabel('Simulated daily count')
+        ax.set_title('Daily Link Counts: Expected vs Simulated')
+        fig.tight_layout()
+
+        # --- Save plot and CSV -------------------------------------------------
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+            plot_path = os.path.join(output_dir, 'daily_counts.png')
+            fig.savefig(plot_path)
+
+            # Génère le CSV avec les colonnes demandées
+            df = pd.DataFrame({
+                'link_id': road_ids,
+                'simulated': [sim_totals[i].item() for i in road_ids],
+                'expected': [expected_vec[i].item() for i in road_ids],
+                'difference': [sim_totals[i].item() - expected_vec[i].item() for i in road_ids],
+            })
+            csv_path = os.path.join(output_dir, 'daily_counts.csv')
+            df.to_csv(csv_path, index=False)
+            print(f"Daily counts plot saved as {plot_path}")
+            print(f"Daily counts CSV saved as {csv_path}")
+
+        return fig
+
+
     def get_info(self, road_id, h: FeatureHelpers):
 
         road = self.graph.x[road_id]
