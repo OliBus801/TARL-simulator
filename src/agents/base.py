@@ -311,7 +311,13 @@ class Agents(AgentFeatureHelpers):
         x[road_sorted, h.AGENT_TIME_ARRIVAL.start + positions] = float(self.time)
 
         # Compute and store the time of departure for each inserted agent
-        time_congestion = graph.congestion_constant[road_sorted].to(x.dtype) / (x[road_sorted, h.MAX_NUMBER_OF_AGENT] + 10 - start_counts.to(x.dtype))
+        if hasattr(graph, "congestion_constant"):
+            congestion_const = graph.congestion_constant[road_sorted].to(x.dtype)
+            denom = x[road_sorted, h.MAX_NUMBER_OF_AGENT] + 10 - start_counts.to(x.dtype)
+            time_congestion = congestion_const / denom
+        else:
+            time_congestion = torch.zeros_like(start_counts, dtype=x.dtype)
+
         travel_time = torch.max(
             torch.stack((x[road_sorted, h.FREE_FLOW_TIME_TRAVEL], time_congestion)), dim=0
         ).values
